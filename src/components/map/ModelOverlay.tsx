@@ -161,9 +161,17 @@ const ModelOverlay: React.FC<ModelOverlayProps> = ({
           </mesh>
           {/* Vertical guide from ground level up to the actual Y, to spot height mismatches */}
           {groundLineGeometry && (
-            <line geometry={groundLineGeometry} renderOrder={1000}>
-              <lineBasicMaterial color={HITBOX_COLOR} depthTest={false} transparent opacity={0.8} />
-            </line>
+            <primitive
+              object={new THREE.Line(groundLineGeometry)}
+              renderOrder={1000}
+            >
+              <lineBasicMaterial
+                color={HITBOX_COLOR}
+                depthTest={false}
+                transparent
+                opacity={0.8}
+              />
+            </primitive>
           )}
           {/* The 4 axis-aligned collision probes (entity position + 200 units N/S/E/W per the
               reference documentation), drawn as a cross rather than a disc/ring - the game does
@@ -171,9 +179,18 @@ const ModelOverlay: React.FC<ModelOverlayProps> = ({
           {cardinalLineGeometries && (
             <group>
               {cardinalLineGeometries.map((geom, i) => (
-                <line key={i} geometry={geom} renderOrder={999}>
-                  <lineBasicMaterial color={COLLISION_COLOR} depthTest={false} transparent opacity={0.7} />
-                </line>
+                <primitive
+                  key={i}
+                  object={new THREE.Line(geom)}
+                  renderOrder={999}
+                >
+                  <lineBasicMaterial
+                    color={COLLISION_COLOR}
+                    depthTest={false}
+                    transparent
+                    opacity={0.7}
+                  />
+                </primitive>
               ))}
             </group>
           )}
