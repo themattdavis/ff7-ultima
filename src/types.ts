@@ -1,6 +1,7 @@
 "use strict";
 
 export enum Tabs {
+  Speedrun = "Speedrun",
   General = "general",
   Field = "field",
   World = "world",
@@ -9,6 +10,7 @@ export enum Tabs {
   Chocobos = "chocobos",
   Variables = "variables",
   SaveStates = "save states",
+  StepGraph  = "stepgraph",
 }
 
 export enum GameModule {

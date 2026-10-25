@@ -149,7 +149,7 @@ const EncountersTable = memo(
   (prev, next) => prev.region === next.region && prev.terrain === next.terrain
 );
 
-export function World(props: { ff7: FF7 }) {
+export function World(props: { ff7: FF7; mapWindow: Window | null; setMapWindow: (w: Window | null) => void; mapWebview: Webview | null; setMapWebview: (w: Webview | null) => void }) {
   const ff7 = props.ff7;
   const state = ff7.gameState;
   const { gameData } = useFF7Context();
@@ -162,8 +162,7 @@ export function World(props: { ff7: FF7 }) {
   const [editCoord, setEditCoord] = useState<"x" | "y" | "z" | "direction" | null>(null);
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [currentModelEditing, setCurrentModelEditing] = useState<number | null>(null);
-  const [mapWindow, setMapWindow] = useState<Window | null>(null);
-  const [mapWebview, setMapWebview] = useState<Webview | null>(null);
+  const { mapWindow, setMapWindow, mapWebview, setMapWebview } = props;
 
   const convertCoordinates = (x: number, z: number) => {
     const imageDimensions = worldmapRef.current!.getBoundingClientRect();
@@ -370,21 +369,6 @@ export function World(props: { ff7: FF7 }) {
     });
   }
 
-  useEffect(() => {
-    return () => {
-      // Cleanup on component unmount
-      if (mapWindow) {
-        mapWindow.close();
-      }
-    };
-  }, [mapWindow]);
-
-  useEffect(() => {
-    if (mapWebview) {
-      mapWebview.emit("ff7-data", state);
-    }
-  }, [mapWebview, state]);
-
   return (
     <div>
       <h4 className="text-center mt-2 mb-1 font-medium">Current Position</h4>
@@ -450,6 +434,7 @@ export function World(props: { ff7: FF7 }) {
           </Row>
         </div>
       </div>
+
       {ff7.gameState.worldZoomTiltEnabled && (
         <>
           <div className="flex gap-2 p-2 bg-zinc-800 rounded-md text-xs">

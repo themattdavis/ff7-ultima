@@ -6,6 +6,47 @@ export interface Shortcut {
   callback: (ff7: FF7) => Promise<void>;
 }
 
+let saveStateIndex = -1;
+
+export function setSaveStateIndex(index: number) {
+  saveStateIndex = index;
+}
+
+async function navigateSaveState(ff7: FF7, direction: 1 | -1) {
+  const order = ff7.saveStates.displayOrder;
+  if (order.length === 0) return;
+
+  const fieldStates = ff7.saveStates.fieldStates;
+  const worldStates = ff7.saveStates.worldStates || [];
+
+  const stateMap = new Map<string, { id: string; title?: string; category?: string }>();
+  fieldStates.forEach(s => stateMap.set(s.id, s));
+  worldStates.forEach(s => stateMap.set(s.id, s));
+
+  const filter = ff7.saveStates.selectedCategoryFilter ?? 'all';
+
+  const orderedIds = order.filter((id: string) => {
+    const s = stateMap.get(id);
+    if (!s) return false;
+    if (filter === 'all') return true;
+    if (filter === 'uncategorized') return !s.category || s.category.trim() === '';
+    return s.category === filter;
+  });
+  if (orderedIds.length === 0) return;
+
+  if (saveStateIndex === -1) {
+    const lastId = ff7.saveStates.lastLoadedFieldStateId;
+    const idx = lastId ? orderedIds.indexOf(lastId) : -1;
+    saveStateIndex = idx !== -1 ? idx : 0;
+  }
+
+  saveStateIndex = Math.max(0, Math.min(orderedIds.length - 1, saveStateIndex + direction));
+  const stateId = orderedIds[saveStateIndex];
+  const state = stateMap.get(stateId);
+
+  await ff7.loadState(stateId); // no-ops immediately if already loading
+}
+
 export const defaultShortcuts: Shortcut[] = [
   {
     key: "F1",
@@ -33,7 +74,6 @@ export const defaultShortcuts: Shortcut[] = [
     action: "Slow Speed (0.25x)",
     callback: async (ff7) => {
       await ff7.setSpeed(0.25);
-      await ff7.showGameMessage("0.25x Speed", 2000);
     },
   },
   {
@@ -41,7 +81,6 @@ export const defaultShortcuts: Shortcut[] = [
     action: "Normal Speed (1x)",
     callback: async (ff7) => {
       await ff7.setSpeed(1);
-      await ff7.showGameMessage("Normal Speed", 2000);
     },
   },
   {
@@ -49,23 +88,36 @@ export const defaultShortcuts: Shortcut[] = [
     action: "Speed Up (5x)",
     callback: async (ff7) => {
       await ff7.setSpeed(5);
-      await ff7.showGameMessage("5x Speed", 2000);
     },
   },
   {
     key: "F5",
-    action: "Load State (on field)",
+    action: "Load State",
     callback: async (ff7) => {
       await ff7.loadState();
-      await ff7.showGameMessage("State Loaded", 2000, 5);
     },
   },
   {
     key: "F6",
-    action: "Save State (on field)",
+    action: "Save State",
     callback: async (ff7) => {
       await ff7.saveState();
-      await ff7.showGameMessage("State Saved", 2000, 5);
+      // Point navigator to the end so next/prev starts from the new state
+      saveStateIndex = ff7.saveStates.displayOrder.length - 1;
+    },
+  },
+  {
+    key: "",
+    action: "Previous Save State",
+    callback: async (ff7) => {
+      await navigateSaveState(ff7, -1);
+    },
+  },
+  {
+    key: "",
+    action: "Next Save State",
+    callback: async (ff7) => {
+      await navigateSaveState(ff7, 1);
     },
   },
   {
@@ -73,7 +125,6 @@ export const defaultShortcuts: Shortcut[] = [
     action: "Full Heal and remove bad status effects",
     callback: async (ff7) => {
       await ff7.fullHeal();
-      await ff7.showGameMessage("Full Party Heal", 2000);
     },
   },
   {
@@ -81,7 +132,6 @@ export const defaultShortcuts: Shortcut[] = [
     action: "Toggle Limit Bar (full or empty)",
     callback: async (ff7) => {
       await ff7.toggleLimitBar();
-      await ff7.showGameMessage("Toggled Limit Bars", 2000);
     },
   },
   {
@@ -96,8 +146,6 @@ export const defaultShortcuts: Shortcut[] = [
     action: "Toggle Skip Dialogues",
     callback: async (ff7) => {
       await ff7.toggleSkipDialogues();
-      const enabled = !ff7.gameState.fieldSkipDialoguesEnabled;
-      await ff7.showGameMessage("Skip Dialogues " + (enabled ? "Enabled" : "Disabled"), 2000, enabled ? 4 : 6);
     },
   },
   {
@@ -107,8 +155,6 @@ export const defaultShortcuts: Shortcut[] = [
       ff7.gameState.walkAnywhereEnabled
         ? await ff7.disableWalkAnywhere()
         : await ff7.enableWalkAnywhere();
-      const enabled = !ff7.gameState.walkAnywhereEnabled;
-      await ff7.showGameMessage("Walk Anywhere " + (enabled ? "Enabled" : "Disabled"), 2000, enabled ? 4 : 6);
     },
   },
   {
@@ -118,8 +164,6 @@ export const defaultShortcuts: Shortcut[] = [
       ff7.gameState.manualSlotsEnabled
         ? await ff7.disableManualSlots()
         : await ff7.enableManualSlots();
-      const enabled = !ff7.gameState.manualSlotsEnabled;
-      await ff7.showGameMessage("Manual Slots " + (enabled ? "Enabled" : "Disabled"), 2000, enabled ? 4 : 6);
     },
   },
   {
@@ -129,8 +173,6 @@ export const defaultShortcuts: Shortcut[] = [
       ff7.gameState.invincibilityEnabled
         ? await ff7.disableInvincibility()
         : await ff7.enableInvincibility();
-      const enabled = !ff7.gameState.invincibilityEnabled;
-      await ff7.showGameMessage("Invincibility " + (enabled ? "Enabled" : "Disabled"), 2000, enabled ? 4 : 6);
     },
   },
   {
@@ -140,8 +182,6 @@ export const defaultShortcuts: Shortcut[] = [
       ff7.gameState.instantATBEnabled
         ? await ff7.disableInstantATB()
         : await ff7.enableInstantATB();
-      const enabled = !ff7.gameState.instantATBEnabled;
-      await ff7.showGameMessage("Instant ATB " + (enabled ? "Enabled" : "Disabled"), 2000, enabled ? 4 : 6);
     },
   },
   {
@@ -149,8 +189,6 @@ export const defaultShortcuts: Shortcut[] = [
     action: "Toggle Run by Default",
     callback: async (ff7) => {
       await ff7.toggleRunByDefault();
-      const enabled = !ff7.gameState.fieldRunByDefaultEnabled;
-      await ff7.showGameMessage("Run by Default " + (enabled ? "Enabled" : "Disabled"), 2000, enabled ? 4 : 6);
     },
   },
   {
@@ -158,8 +196,13 @@ export const defaultShortcuts: Shortcut[] = [
     action: "Toggle Auto Sense",
     callback: async (ff7) => {
       await ff7.toggleAutoSense();
-      const enabled = !ff7.gameState.autoSenseEnabled;
-      await ff7.showGameMessage("Auto Sense " + (enabled ? "Enabled" : "Disabled"), 2000, enabled ? 4 : 6);
     },
   },
-]; 
+  {
+    key: "F12",
+    action: "Toggle Step Lock",
+    callback: async (ff7) => {
+      (window as any).__toggleStepLock?.();
+    },
+  },
+];

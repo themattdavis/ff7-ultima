@@ -4,6 +4,7 @@ use ff7_lib::ff7;
 use ff7_lib::ff7::addresses::FF7Addresses;
 use ff7_lib::ff7::types::{EnemyData, WorldFieldTblItem, ItemData, Scene, ChocoboData, ChocoboSlot};
 use ff7_lib::ff7::types::field::FieldLights;
+use ff7_lib::ff7::types::world::WorldChunkSlot;
 use ff7_lib::utils::memory;
 use ff7_lib::utils::process;
 use tauri::ipc::Invoke;
@@ -148,6 +149,16 @@ pub fn read_world_field_tbl_data() -> Result<Vec<WorldFieldTblItem>, String> {
 }
 
 #[tauri::command]
+pub fn read_world_chunk_slots() -> Result<Vec<WorldChunkSlot>, String> {
+    ff7::data::world::read_world_chunk_slots(&FF7Addresses::new())
+}
+
+#[tauri::command]
+pub fn get_world_current_entity_address() -> Result<u32, String> {
+    memory::read_memory_int(FF7Addresses::new().world_current_obj_ptr)
+}
+
+#[tauri::command]
 pub fn read_variables_bank(bank: u32) -> Result<Vec<u8>, String> {
     ff7::data::general::read_variables_bank(bank, &FF7Addresses::new())
 }
@@ -287,6 +298,8 @@ pub fn generate_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync {
         read_enemy_attack_names,
         read_item_data,
         read_world_field_tbl_data,
+        read_world_chunk_slots,
+        get_world_current_entity_address,
         read_variables_bank,
         write_variable_8bit,
         write_variable_16bit,

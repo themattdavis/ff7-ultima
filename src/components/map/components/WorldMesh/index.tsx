@@ -1,13 +1,15 @@
-import { useEffect, useState, useCallback, useRef, forwardRef } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef, forwardRef } from 'react';
 import * as THREE from 'three';
 import { ThreeEvent } from '@react-three/fiber';
 import { useTextureAtlas } from './hooks';
 import { useGeometry } from './hooks';
 import { useSelectedTriangleGeometry } from './hooks';
+import { TriangleLabels } from './TriangleLabels';
 import { RenderingMode, TriangleWithVertices } from '../../types';
 import { Triangle } from '@/ff7/mapfile';
 import { useMapState } from '@/hooks/useMapState';
-import { MESH_SIZE } from '../../constants';
+import { useFF7Context } from '@/FF7Context';
+import { MESH_SIZE, SCALE } from '../../constants';
 import { GridOverlay } from '../GridOverlay';
 import { SELECTION_Y_OFFSET } from '../../constants';
 
@@ -21,6 +23,7 @@ interface WorldMeshProps {
   showGrid?: boolean;
   disablePainting?: boolean;
   wireframe?: boolean;
+  showTriangleNumbers?: boolean;
 }
 
 export const WorldMesh = forwardRef<THREE.Mesh, WorldMeshProps>(function WorldMesh({
@@ -33,6 +36,7 @@ export const WorldMesh = forwardRef<THREE.Mesh, WorldMeshProps>(function WorldMe
   showGrid,
   disablePainting,
   wireframe,
+  showTriangleNumbers,
 }: WorldMeshProps, ref) {
   const [mouseDownPos, setMouseDownPos] = useState<{ x: number; y: number } | null>(null);
   const [paintingMouseDownPos, setPaintingMouseDownPos] = useState<{ x: number; y: number } | null>(null);
@@ -40,7 +44,27 @@ export const WorldMesh = forwardRef<THREE.Mesh, WorldMeshProps>(function WorldMe
   const [paintingDragStartMode, setPaintingDragStartMode] = useState<boolean | null>(null);
   const [paintingHasToggled, setPaintingHasToggled] = useState(false);
   const { textures, worldmap, mapType, addChangedMesh, mode, paintingSelectedTriangles, togglePaintingSelectedTriangle, setTriangleMap } = useMapState();
-  
+  const { gameState } = useFF7Context();
+
+  // Current player/model position, converted into the same local scaled space (raw game units *
+  // SCALE) that transformedVertices and ModelOverlay's pins already use - see ModelOverlay for the
+  // matching x*SCALE / z*SCALE convention this mirrors.
+  const playerPosition = useMemo<[number, number, number] | null>(() => {
+    const model = gameState.worldCurrentModel;
+    if (!model) return null;
+
+    let x = model.x;
+    let z = model.z;
+    // Underwater map models use a shifted origin (see ModelOverlay) - mirror that here so the
+    // vicinity radius lines up with the underwater terrain mesh instead of the overworld one.
+    if (gameState.worldMapType === 2) {
+      x -= 0x18000;
+      z -= 0x10000;
+    }
+
+    return [x * SCALE, (model.y || 0) * SCALE, z * SCALE];
+  }, [gameState.worldCurrentModel, gameState.worldMapType]);
+
   if (!worldmap) return null;
 
   const { texture, canvas, texturePositions } = useTextureAtlas(textures, mapType);
@@ -249,7 +273,7 @@ export const WorldMesh = forwardRef<THREE.Mesh, WorldMeshProps>(function WorldMe
               depthWrite={false}
             />
           </mesh>
-          {!showGrid && selectedGeometry && mode !== 'painting' && (
+          {selectedGeometry && mode !== 'painting' && (
             <lineSegments renderOrder={10}>
               <edgesGeometry attach="geometry" args={[selectedGeometry]} />
               <lineBasicMaterial 
@@ -267,6 +291,7 @@ export const WorldMesh = forwardRef<THREE.Mesh, WorldMeshProps>(function WorldMe
               worldmapWidth={worldmap?.[0]?.length ?? 0} 
             />
           )}
+          <TriangleLabels triangleMap={triangleMap} visible={!!showTriangleNumbers} playerPosition={playerPosition} />
           {mode === 'painting' && paintingSelectedTriangles.size > 0 && triangleMap && (
             Array.from(paintingSelectedTriangles).map(faceIndex => {
               const tri = triangleMap[faceIndex];

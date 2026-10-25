@@ -109,6 +109,7 @@ export interface FF7Addresses {
   auto_sense_check: number;
   field_run_by_default_1: number;
   field_run_by_default_2: number;
+  field_fade_type: number;
 }
 
 export function useFF7Addresses() {

@@ -1,6 +1,6 @@
 import { Button } from '@/components/ui/button';
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
-import { RotateCcw, RotateCw, Home, Grid, Grip, Boxes, User } from 'lucide-react';
+import { RotateCcw, RotateCw, Home, Grid, Grip, Boxes, User, Hash, Crosshair, LayoutGrid } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { RenderingMode } from '../types';
 import { useFF7Context } from '@/FF7Context';
@@ -13,8 +13,14 @@ interface MapControlsProps {
   onWireframeToggle?: () => void;
   showGrid?: boolean;
   onGridToggle?: () => void;
+  showTriangleNumbers?: boolean;
+  onTriangleNumbersToggle?: () => void;
   showModels?: boolean;
   onModelsToggle?: () => void;
+  showHitbox?: boolean;
+  onHitboxToggle?: () => void;
+  showChunkDebug?: boolean;
+  onChunkDebugToggle?: () => void;
   renderingMode: RenderingMode;
   onRenderingModeChange: (mode: RenderingMode) => void;
   followPlayer?: boolean;
@@ -29,8 +35,14 @@ export function MapControls({
   onWireframeToggle,
   showGrid = false,
   onGridToggle,
+  showTriangleNumbers = false,
+  onTriangleNumbersToggle,
   showModels = false,
   onModelsToggle,
+  showHitbox = false,
+  onHitboxToggle,
+  showChunkDebug = false,
+  onChunkDebugToggle,
   renderingMode,
   onRenderingModeChange,
   followPlayer = false,
@@ -124,6 +136,26 @@ export function MapControls({
             </TooltipProvider>
           )}
 
+          {onTriangleNumbersToggle && (
+            <TooltipProvider delayDuration={100}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant={showTriangleNumbers ? "default" : "outline"}
+                    size="icon"
+                    className={`h-6 w-6 ${showTriangleNumbers ? 'bg-primary hover:bg-primary/90' : ''}`}
+                    onClick={onTriangleNumbersToggle}
+                  >
+                    <Hash className={`h-3.5 w-3.5 ${showTriangleNumbers ? 'text-primary-foreground' : ''}`} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent className="text-xs">
+                  <p>Toggle triangle numbers {showTriangleNumbers ? '(on)' : '(off)'}</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
+
           {onModelsToggle && (
             <TooltipProvider delayDuration={100}>
               <Tooltip>
@@ -139,6 +171,46 @@ export function MapControls({
                 </TooltipTrigger>
                 <TooltipContent className="text-xs">
                   <p>Toggle models {showModels ? '(on)' : '(off)'}</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
+
+          {onHitboxToggle && (
+            <TooltipProvider delayDuration={100}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant={showHitbox ? "default" : "outline"}
+                    size="icon"
+                    className={`h-6 w-6 ${showHitbox ? 'bg-primary hover:bg-primary/90' : ''}`}
+                    onClick={onHitboxToggle}
+                  >
+                    <Crosshair className={`h-3.5 w-3.5 ${showHitbox ? 'text-primary-foreground' : ''}`} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent className="text-xs">
+                  <p>Toggle player hitbox {showHitbox ? '(on)' : '(off)'}</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
+
+          {onChunkDebugToggle && (
+            <TooltipProvider delayDuration={100}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant={showChunkDebug ? "default" : "outline"}
+                    size="icon"
+                    className={`h-6 w-6 ${showChunkDebug ? 'bg-primary hover:bg-primary/90' : ''}`}
+                    onClick={onChunkDebugToggle}
+                  >
+                    <LayoutGrid className={`h-3.5 w-3.5 ${showChunkDebug ? 'text-primary-foreground' : ''}`} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent className="text-xs">
+                  <p>Toggle chunk slot debug {showChunkDebug ? '(on)' : '(off)'}</p>
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>

@@ -188,7 +188,7 @@ const AutocompleteInput: React.FC<AutocompleteInputProps> = ({
       </div>
       {isOpen && suggestions.length > 0 && (
         <div className="absolute left-0 right-0 z-50 mt-1 max-h-60 overflow-auto rounded-md border bg-popover p-1 shadow-md">
-          {suggestions.slice(0, 25).map((battle, index) => (
+          {suggestions.map((battle, index) => (
             <div
               key={battle.id}
               onClick={() => handleSelectSuggestion(battle)}

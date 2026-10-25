@@ -11,7 +11,7 @@
   "app": {
     "windows": [
       {
-        "title": "Ultima - FF7 Real-time Game Editor",
+        "title": "Ultima - FF7 Real-time Game Editor - Unofficial Build",
         "width": 720,
         "height": 635,
         "theme": "Dark",
@@ -28,7 +28,7 @@
   "bundle": {
     "active": true,
     "targets": "nsis",
-    "createUpdaterArtifacts": true,
+    "createUpdaterArtifacts": false,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -4,6 +4,7 @@ mod updater;
 mod logging;
 
 use ff7_lib::utils::process;
+use tauri::Manager;
 use tauri_plugin_window_state::StateFlags;
 
 fn main() {
@@ -27,6 +28,14 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(commands::generate_handler())
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                let app = window.app_handle();
+                if app.webview_windows().is_empty() {
+                    std::process::exit(0);
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

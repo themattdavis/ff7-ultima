@@ -14,7 +14,19 @@ export interface GeneralSettings {
   hasSeenSettingsHint: boolean;
   lastDismissedUpdateVersion: string | null;
   speedHackEnhancements: boolean;
+  disableGlacierTemp: boolean;
+  disableWhirlwindBattles: boolean;
+  autoSkipFMV: boolean;
   selectedCategoryFilter: string;
+  lastLoadedStateId: string | null;
+  doubleInputFix: boolean;
+  skipCPR: boolean
+  saveAnywhere: boolean;
+  showBattle: boolean,
+  showSaveStates: boolean;
+  showStepgraph: boolean;
+  stepLockEnabled: boolean;
+  stepLockValues: { stepId: number; stepFraction: number; stepOffset: number; formationIndex: number; dangerValue: number } | null;
   rememberedHacks: {
     speed: boolean;
     skipIntros: boolean;
@@ -53,6 +65,8 @@ export interface HackSettings {
 export interface SaveStates {
   fieldStates: SaveState[];
   snowboardStates: SnowBoardSaveState[];
+  worldStates: WorldSaveState[];
+  displayOrder?: string[];
 }
 
 export interface SaveStateBase {
@@ -76,10 +90,24 @@ export type SnowBoardSaveState = SaveStateBase & {
   entitiesData: number[];
 };
 
+export type WorldSaveState = SaveStateBase & {
+  savemap: number[];
+  worldX: number;
+  worldY: number;
+  worldZ: number;
+  worldDirection: number;
+  worldMapType: number;
+  modelCoords: { x: number; y: number; z: number; direction: number; model_id?: number }[];
+};
+
 const generalSettingsAtom = atom<GeneralSettings | null>(null);
 const hackSettingsAtom = atom<HackSettings | null>(null);
 const shortcutsAtom = atom<Record<string, string> | null>(null);
-const saveStatesAtom = atom<SaveStates>({ fieldStates: [], snowboardStates: [] });
+const saveStatesAtom = atom<SaveStates>({ fieldStates: [], snowboardStates: [], worldStates: [] });
+
+// Shared display order atom — the single source of truth for save state row ordering.
+// Lives outside React component state so shortcuts.ts can read it via ff7.saveStates.
+export const saveStateDisplayOrderAtom = atom<string[]>([]);
 
 let storeInstance: Store | null = null;
 let initializationPromise: Promise<void> | null = null;
@@ -156,11 +184,13 @@ export function useSettings() {
 
         let states = await store.get<SaveStates>('saveStates');
         if (!states) {
-            states = { fieldStates: [], snowboardStates: [] };
-            await store.set('saveStates', states);
-            await store.save();
-            logger.info('Initialized save states in store.');
+          states = { fieldStates: [], snowboardStates: [], worldStates: [] };
+          await store.set('saveStates', states);
+          await store.save();
+          logger.info('Initialized save states in store.');
         }
+        if (!states.worldStates) states.worldStates = [];
+        setSaveStates(states);
         setSaveStates(states);
 
         logger.info('Settings loaded successfully into hook state.');
@@ -189,7 +219,7 @@ export function useSettings() {
 
   const saveHackSettings = useCallback(
     debounce(async (settings: HackSettings) => {
-       try {
+      try {
         const store = await getOrInitializeStore();
         await store.set('hacks', settings);
         await store.save();
@@ -220,14 +250,17 @@ export function useSettings() {
       try {
         const store = await getOrInitializeStore();
         const statesWithIds: SaveStates = {
-            fieldStates: states.fieldStates.map(s => ({ ...s, id: s.id || crypto.randomUUID() })),
-            snowboardStates: states.snowboardStates.map(s => ({ ...s, id: s.id || crypto.randomUUID() })),
+          fieldStates: states.fieldStates.map(s => ({ ...s, id: s.id || crypto.randomUUID() })),
+          snowboardStates: states.snowboardStates.map(s => ({ ...s, id: s.id || crypto.randomUUID() })),
+          worldStates: states.worldStates.map(s => ({ ...s, id: s.id || crypto.randomUUID() })),
+          displayOrder: states.displayOrder,
         };
         await store.set('saveStates', statesWithIds);
         await store.save();
         logger.info('Saved states to main store', {
           fieldStatesCount: statesWithIds.fieldStates.length,
           snowboardStatesCount: statesWithIds.snowboardStates.length,
+          worldStatesCount: statesWithIds.worldStates.length,
         });
       } catch (error) {
         logger.error('Failed to save save states', { error });
@@ -252,16 +285,18 @@ export function useSettings() {
 
   const updateShortcuts = useCallback((newShortcuts: Record<string, string>) => {
     setShortcuts(currentShortcuts => {
-       saveShortcuts(newShortcuts);
-       return newShortcuts;
+      saveShortcuts(newShortcuts);
+      return newShortcuts;
     });
   }, [saveShortcuts]);
 
   const updateSaveStates = useCallback((newSaveStates: SaveStates) => {
     setSaveStates(currentSaveStates => {
       const newStatesWithIds: SaveStates = {
-            fieldStates: newSaveStates.fieldStates.map(s => ({ ...s, id: s.id || crypto.randomUUID() })),
-            snowboardStates: newSaveStates.snowboardStates.map(s => ({ ...s, id: s.id || crypto.randomUUID() })),
+        fieldStates: newSaveStates.fieldStates.map(s => ({ ...s, id: s.id || crypto.randomUUID() })),
+        snowboardStates: newSaveStates.snowboardStates.map(s => ({ ...s, id: s.id || crypto.randomUUID() })),
+        worldStates: (newSaveStates.worldStates || []).map(s => ({ ...s, id: s.id || crypto.randomUUID() })),
+        displayOrder: newSaveStates.displayOrder,
       };
       saveSaveStates(newStatesWithIds);
       return newStatesWithIds;
@@ -287,7 +322,19 @@ function getDefaultGeneralSettings(): GeneralSettings {
     hasSeenSettingsHint: false,
     lastDismissedUpdateVersion: null,
     speedHackEnhancements: true,
+    disableGlacierTemp: false,
+    disableWhirlwindBattles: false,
+    autoSkipFMV: false,
     selectedCategoryFilter: 'all',
+    lastLoadedStateId: null,
+    doubleInputFix: false,
+    skipCPR: false,
+    saveAnywhere: false,
+    showBattle: false,
+    showSaveStates: false,
+    showStepgraph: false,
+    stepLockEnabled: false,
+    stepLockValues: null,
     rememberedHacks: {
       speed: true,
       skipIntros: true,

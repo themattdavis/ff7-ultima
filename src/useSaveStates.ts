@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useAtom } from "jotai";
 import { Destination } from "./types";
-import { useSettings, SaveStateBase } from "./useSettings";
+import { useSettings, SaveStateBase, WorldSaveState, saveStateDisplayOrderAtom } from "./useSettings";
 import { logger } from "./lib/logging";
+import { writeTextFile } from "@tauri-apps/plugin-fs";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 type RegionOffset = [number, number];
 
@@ -46,8 +48,34 @@ function generateId(): string {
 }
 
 export function useSaveStates() {
-  const { saveStates, updateSaveStates } = useSettings();
-  const [lastLoadedFieldStateId, setLastLoadedFieldStateId] = useState<string | null>(null);
+  const { saveStates, updateSaveStates, generalSettings, updateGeneralSettings } = useSettings();
+  const [displayOrder, setDisplayOrderAtom] = useAtom(saveStateDisplayOrderAtom);
+
+  // Restore persisted order from the store the first time it's available
+  // (atom starts empty; saveStates.displayOrder is loaded from disk)
+  const setDisplayOrder = (updater: string[] | ((prev: string[]) => string[])) => {
+    setDisplayOrderAtom(prev => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      // Persist alongside save states (debounced via updateSaveStates)
+      updateSaveStates({ ...saveStates, displayOrder: next });
+      return next;
+    });
+  };
+
+  // On first load, if the atom is empty but the store has a saved order, restore it
+  if (displayOrder.length === 0 && saveStates.displayOrder?.length) {
+    setDisplayOrderAtom(saveStates.displayOrder);
+  }
+
+  const lastLoadedFieldStateId = generalSettings?.lastLoadedStateId ?? null;
+
+  const setLastLoadedStateId = (id: string | null) => {
+    if (generalSettings) {
+      updateGeneralSettings({ ...generalSettings, lastLoadedStateId: id });
+    }
+  };
+
+  // ── Field states ────────────────────────────────────────────────────────────
 
   const pushFieldState = (state: Omit<SaveState, "timestamp" | "regionOffsets" | "id">) => {
     const id = generateId();
@@ -61,13 +89,96 @@ export function useSaveStates() {
       ...saveStates,
       fieldStates: [...saveStates.fieldStates, newState],
     });
-    setLastLoadedFieldStateId(null);
-    logger.info('Created new field state', {
-      id,
-      fieldId: state.fieldId,
-      fieldName: state.fieldName,
+    setLastLoadedStateId(null);
+    logger.info('Created new field state', { id, fieldId: state.fieldId, fieldName: state.fieldName });
+  };
+
+  // Replaces an existing field state's captured data in place, keeping its
+  // id, timestamp, title, and category untouched.
+  const overwriteFieldState = (id: string, state: Omit<SaveState, "timestamp" | "regionOffsets" | "id" | "title" | "category">) => {
+    const exists = saveStates.fieldStates.some(s => s.id === id);
+    if (!exists) return;
+    updateSaveStates({
+      ...saveStates,
+      fieldStates: saveStates.fieldStates.map(s =>
+        s.id === id ? { ...s, ...state, regionOffsets: SaveRegions } : s
+      ),
+    });
+    logger.info('Overwrote field state', { id, fieldId: state.fieldId, fieldName: state.fieldName });
+  };
+
+  const getLatestFieldState = () => {
+    if (saveStates.fieldStates.length === 0) return null;
+    if (lastLoadedFieldStateId) {
+      const state = saveStates.fieldStates.find(s => s.id === lastLoadedFieldStateId);
+      if (state) return state;
+    }
+    return saveStates.fieldStates[saveStates.fieldStates.length - 1];
+  };
+
+  const getFieldState = (index: number) => {
+    if (index < 0 || index >= saveStates.fieldStates.length) return null;
+    setLastLoadedStateId(null);
+    return saveStates.fieldStates[index];
+  };
+
+  const getFieldStateById = (id: string) => {
+    const state = saveStates.fieldStates.find(s => s.id === id);
+    if (!state) return null;
+    setLastLoadedStateId(id);
+    return state;
+  };
+
+  const removeFieldState = (id: string) => {
+    updateSaveStates({ ...saveStates, fieldStates: saveStates.fieldStates.filter(s => s.id !== id) });
+    if (lastLoadedFieldStateId === id) setLastLoadedStateId(null);
+    logger.info('Removed field state', { id });
+  };
+
+  const removeFieldStates = (ids: string[]) => {
+    updateSaveStates({ ...saveStates, fieldStates: saveStates.fieldStates.filter(s => !ids.includes(s.id)) });
+    if (lastLoadedFieldStateId && ids.includes(lastLoadedFieldStateId)) setLastLoadedStateId(null);
+    logger.info('Removed field states', { count: ids.length });
+  };
+
+  const clearFieldStates = () => {
+    updateSaveStates({ ...saveStates, fieldStates: [] });
+    setLastLoadedStateId(null);
+  };
+
+  const updateFieldStateTitle = (id: string, title: string) => {
+    updateSaveStates({
+      ...saveStates,
+      fieldStates: saveStates.fieldStates.map(s => s.id === id ? { ...s, title } : s),
     });
   };
+
+  const updateFieldStateCategory = (id: string, category: string) => {
+    updateSaveStates({
+      ...saveStates,
+      fieldStates: saveStates.fieldStates.map(s => s.id === id ? { ...s, category } : s),
+    });
+  };
+
+  const updateFieldStateCategoriesBulk = (ids: string[], category: string) => {
+    const idSet = new Set(ids);
+    updateSaveStates({
+      ...saveStates,
+      fieldStates: saveStates.fieldStates.map(s => idSet.has(s.id) ? { ...s, category } : s),
+    });
+  };
+
+  const reorderFieldStates = (fromId: string, toId: string) => {
+    const fromIndex = saveStates.fieldStates.findIndex(s => s.id === fromId);
+    const toIndex = saveStates.fieldStates.findIndex(s => s.id === toId);
+    if (fromIndex === -1 || toIndex === -1) return;
+    const next = [...saveStates.fieldStates];
+    const [removed] = next.splice(fromIndex, 1);
+    next.splice(toIndex, 0, removed);
+    updateSaveStates({ ...saveStates, fieldStates: next });
+  };
+
+  // ── Snowboard states ────────────────────────────────────────────────────────
 
   const pushSnowboardState = (state: Omit<SnowBoardSaveState, "timestamp" | "id">) => {
     const id = generateId();
@@ -75,47 +186,25 @@ export function useSaveStates() {
       ...saveStates,
       snowboardStates: [...saveStates.snowboardStates, { ...state, id, timestamp: Date.now() }],
     });
-    logger.info('Created new snowboard state', { id });
   };
 
-  const getLatestFieldState = () => {
-    if (saveStates.fieldStates.length === 0) {
-      logger.debug('No field states available');
-      return null;
-    }
-    if (lastLoadedFieldStateId) {
-      const state = saveStates.fieldStates.find(state => state.id === lastLoadedFieldStateId);
-      if (state) {
-        logger.debug('Returning last manually loaded state', { id: state.id });
-        return state;
-      }
-    }
-    const state = saveStates.fieldStates[saveStates.fieldStates.length - 1];
-    logger.debug('Returning latest field state', { id: state.id });
-    return state;
+  // Replaces an existing snowboard state's captured data in place, keeping
+  // its id, timestamp, and title untouched.
+  const overwriteSnowboardState = (id: string, state: Omit<SnowBoardSaveState, "timestamp" | "id" | "title">) => {
+    const exists = saveStates.snowboardStates.some(s => s.id === id);
+    if (!exists) return;
+    updateSaveStates({
+      ...saveStates,
+      snowboardStates: saveStates.snowboardStates.map(s =>
+        s.id === id ? { ...s, ...state } : s
+      ),
+    });
+    logger.info('Overwrote snowboard state', { id });
   };
 
   const getLatestSnowboardState = () => {
-    if (saveStates.snowboardStates.length === 0) {
-      logger.debug('No snowboard states available');
-      return null;
-    }
-    const state = saveStates.snowboardStates[saveStates.snowboardStates.length - 1];
-    logger.debug('Returning latest snowboard state', { id: state.id });
-    return state;
-  };
-
-  const getFieldState = (index: number) => {
-    if (index < 0 || index >= saveStates.fieldStates.length) return null;
-    setLastLoadedFieldStateId(null);
-    return saveStates.fieldStates[index];
-  };
-
-  const getFieldStateById = (id: string) => {
-    const state = saveStates.fieldStates.find(state => state.id === id);
-    if (!state) return null;
-    setLastLoadedFieldStateId(id);
-    return state;
+    if (saveStates.snowboardStates.length === 0) return null;
+    return saveStates.snowboardStates[saveStates.snowboardStates.length - 1];
   };
 
   const getSnowboardState = (index: number) => {
@@ -124,102 +213,124 @@ export function useSaveStates() {
   };
 
   const getSnowboardStateById = (id: string): SnowBoardSaveState | null => {
-    const index = saveStates.snowboardStates.findIndex(state => state.id === id);
-    if (index === -1) return null;
-    return saveStates.snowboardStates[index];
-  };
-
-  const removeFieldState = (id: string) => {
-    const newFieldStates = saveStates.fieldStates.filter(state => state.id !== id);
-    updateSaveStates({ ...saveStates, fieldStates: newFieldStates });
-    if (lastLoadedFieldStateId === id) {
-      setLastLoadedFieldStateId(null);
-    }
-    logger.info('Removed field state', { id });
-  };
-
-  const removeFieldStates = (ids: string[]) => {
-    const newFieldStates = saveStates.fieldStates.filter(state => !ids.includes(state.id));
-    updateSaveStates({ ...saveStates, fieldStates: newFieldStates });
-    if (lastLoadedFieldStateId && ids.includes(lastLoadedFieldStateId)) {
-      setLastLoadedFieldStateId(null);
-    }
-    logger.info('Removed field states', { ids, count: ids.length });
+    return saveStates.snowboardStates.find(s => s.id === id) ?? null;
   };
 
   const removeSnowboardState = (id: string) => {
-    const newSnowboardStates = saveStates.snowboardStates.filter(state => state.id !== id);
-    updateSaveStates({ ...saveStates, snowboardStates: newSnowboardStates });
-    logger.info('Removed snowboard state', { id });
-  };
-
-  const clearFieldStates = () => {
-    updateSaveStates({ ...saveStates, fieldStates: [] });
-    setLastLoadedFieldStateId(null);
-    logger.info('Cleared all field states', { count: saveStates.fieldStates.length });
+    updateSaveStates({ ...saveStates, snowboardStates: saveStates.snowboardStates.filter(s => s.id !== id) });
   };
 
   const clearSnowboardStates = () => {
     updateSaveStates({ ...saveStates, snowboardStates: [] });
-    logger.info('Cleared all snowboard states', { count: saveStates.snowboardStates.length });
-  };
-
-  const clearAllStates = () => {
-    updateSaveStates({ fieldStates: [], snowboardStates: [] });
-    setLastLoadedFieldStateId(null);
-    logger.info('Cleared all states');
-  };
-
-  const updateFieldStateTitle = (id: string, title: string) => {
-    const newFieldStates = saveStates.fieldStates.map(state =>
-      state.id === id ? { ...state, title } : state
-    );
-    updateSaveStates({ ...saveStates, fieldStates: newFieldStates });
-    logger.info('Updated field state title', { id, title });
-  };
-
-  const updateFieldStateCategory = (id: string, category: string) => {
-    const newFieldStates = saveStates.fieldStates.map(state =>
-      state.id === id ? { ...state, category } : state
-    );
-    updateSaveStates({ ...saveStates, fieldStates: newFieldStates });
-    logger.info('Updated field state category', { id, category });
   };
 
   const updateSnowboardStateTitle = (id: string, title: string) => {
-    const newSnowboardStates = saveStates.snowboardStates.map(state =>
-      state.id === id ? { ...state, title } : state
-    );
-    updateSaveStates({ ...saveStates, snowboardStates: newSnowboardStates });
-    logger.info('Updated snowboard state title', { id, title });
+    updateSaveStates({
+      ...saveStates,
+      snowboardStates: saveStates.snowboardStates.map(s => s.id === id ? { ...s, title } : s),
+    });
   };
 
-  const reorderFieldStates = (fromId: string, toId: string) => {
-    const fromIndex = saveStates.fieldStates.findIndex(state => state.id === fromId);
-    const toIndex = saveStates.fieldStates.findIndex(state => state.id === toId);
-    if (fromIndex === -1 || toIndex === -1) {
-      logger.warn('Attempted to reorder with invalid state IDs', { fromId, toId });
-      return;
+  // ── World states ────────────────────────────────────────────────────────────
+
+  const worldStates = saveStates.worldStates || [];
+
+  const pushWorldState = (state: Omit<WorldSaveState, "timestamp" | "id">) => {
+    const id = generateId();
+    updateSaveStates({
+      ...saveStates,
+      worldStates: [...worldStates, { ...state, id, timestamp: Date.now() }],
+    });
+    setLastLoadedStateId(null);
+    logger.info('Created new world state', { id });
+  };
+
+  // Replaces an existing world state's captured data in place, keeping its
+  // id, timestamp, title, and category untouched.
+  const overwriteWorldState = (id: string, state: Omit<WorldSaveState, "timestamp" | "id" | "title" | "category">) => {
+    const exists = worldStates.some(s => s.id === id);
+    if (!exists) return;
+    updateSaveStates({
+      ...saveStates,
+      worldStates: worldStates.map(s =>
+        s.id === id ? { ...s, ...state } : s
+      ),
+    });
+    logger.info('Overwrote world state', { id });
+  };
+
+  const getLatestWorldState = () => {
+    if (worldStates.length === 0) return null;
+    if (lastLoadedFieldStateId) {
+      const state = worldStates.find(s => s.id === lastLoadedFieldStateId);
+      if (state) return state;
     }
-    const newFieldStates = [...saveStates.fieldStates];
-    const [removed] = newFieldStates.splice(fromIndex, 1);
-    newFieldStates.splice(toIndex, 0, removed);
-    updateSaveStates({ ...saveStates, fieldStates: newFieldStates });
-    logger.info('Reordered field states', { fromId, toId, fromIndex, toIndex });
+    return worldStates[worldStates.length - 1];
+  };
+
+  const getWorldStateById = (id: string) => {
+    const state = worldStates.find(s => s.id === id);
+    if (!state) return null;
+    setLastLoadedStateId(id);
+    return state;
+  };
+
+  const removeWorldState = (id: string) => {
+    updateSaveStates({ ...saveStates, worldStates: worldStates.filter(s => s.id !== id) });
+    if (lastLoadedFieldStateId === id) setLastLoadedStateId(null);
+  };
+
+  const removeStates = (fieldIds: string[], worldIds: string[]) => {
+    const fieldIdSet = new Set(fieldIds);
+    const worldIdSet = new Set(worldIds);
+    updateSaveStates({
+      ...saveStates,
+      fieldStates: saveStates.fieldStates.filter(s => !fieldIdSet.has(s.id)),
+      worldStates: worldStates.filter(s => !worldIdSet.has(s.id)),
+    });
+    if (lastLoadedFieldStateId && (fieldIdSet.has(lastLoadedFieldStateId) || worldIdSet.has(lastLoadedFieldStateId))) {
+      setLastLoadedStateId(null);
+    }
+  };
+
+  const clearWorldStates = () => {
+    updateSaveStates({ ...saveStates, worldStates: [] });
+  };
+
+  const updateWorldStateTitle = (id: string, title: string) => {
+    updateSaveStates({
+      ...saveStates,
+      worldStates: worldStates.map(s => s.id === id ? { ...s, title } : s),
+    });
+  };
+
+  const updateWorldStateCategory = (id: string, category: string) => {
+    updateSaveStates({
+      ...saveStates,
+      worldStates: worldStates.map(s => s.id === id ? { ...s, category } : s),
+    });
+  };
+
+  const updateWorldStateCategoriesBulk = (ids: string[], category: string) => {
+    const idSet = new Set(ids);
+    updateSaveStates({
+      ...saveStates,
+      worldStates: worldStates.map(s => idSet.has(s.id) ? { ...s, category } : s),
+    });
+  };
+
+  // ── General ─────────────────────────────────────────────────────────────────
+
+  const clearAllStates = () => {
+    updateSaveStates({ fieldStates: [], snowboardStates: [], worldStates: [] });
+    setLastLoadedStateId(null);
   };
 
   const exportStates = () => {
-    logger.info('Exporting states', {
-      fieldStatesCount: saveStates.fieldStates.length,
-      snowboardStatesCount: saveStates.snowboardStates.length,
-    });
-
     const encodedFieldStates = saveStates.fieldStates.map(state => ({
       ...state,
       regionOffsets: state.regionOffsets || SaveRegions,
-      regions: state.regions.map(region =>
-        btoa(String.fromCharCode.apply(null, region))
-      ),
+      regions: state.regions.map(region => btoa(String.fromCharCode.apply(null, region))),
       savemap: btoa(String.fromCharCode.apply(null, state.savemap)),
     }));
 
@@ -229,69 +340,118 @@ export function useSaveStates() {
       entitiesData: btoa(String.fromCharCode.apply(null, state.entitiesData)),
     }));
 
-    return { fieldStates: encodedFieldStates, snowboardStates: encodedSnowboardStates };
+    const encodedWorldStates = worldStates.map(state => ({
+      ...state,
+      savemap: btoa(String.fromCharCode.apply(null, state.savemap)),
+    }));
+
+    return { fieldStates: encodedFieldStates, snowboardStates: encodedSnowboardStates, worldStates: encodedWorldStates, displayOrder };
   };
 
-  const importStates = (data: { fieldStates: any[]; snowboardStates: any[] }) => {
-    logger.info('Importing states', {
-      fieldStatesCount: data.fieldStates.length,
-      snowboardStatesCount: data.snowboardStates.length,
-    });
+  const importStates = (data: { fieldStates: any[]; snowboardStates: any[]; worldStates?: any[]; displayOrder?: string[] }, replace = false) => {
+    const baseFieldStates    = replace ? [] : saveStates.fieldStates;
+    const baseSnowboardStates = replace ? [] : saveStates.snowboardStates;
+    const baseWorldStates    = replace ? [] : worldStates;
 
-    const existingFieldIds = new Set(saveStates.fieldStates.map(state => state.id));
+    const existingFieldIds = new Set(baseFieldStates.map((s: SaveState) => s.id));
     const newFieldStates = data.fieldStates
-      .filter(state => !state.id || !existingFieldIds.has(state.id))
-      .map(state => ({
-        ...state,
-        id: state.id || generateId(),
-        regionOffsets: state.regionOffsets || SaveRegions,
-        regions: state.regions.map((base64: string) =>
-          Array.from(atob(base64), char => char.charCodeAt(0))
-        ),
-        savemap: Array.from(atob(state.savemap), char => char.charCodeAt(0)),
+      .filter(s => !s.id || !existingFieldIds.has(s.id))
+      .map(s => ({
+        ...s,
+        id: s.id || generateId(),
+        regionOffsets: s.regionOffsets || SaveRegions,
+        regions: s.regions.map((b64: string) => Array.from(atob(b64), c => c.charCodeAt(0))),
+        savemap: Array.from(atob(s.savemap), c => c.charCodeAt(0)),
       }));
 
-    const existingSnowboardIds = new Set(saveStates.snowboardStates.map(state => state.id));
-    const newSnowboardStates = data.snowboardStates
-      .filter(state => !state.id || !existingSnowboardIds.has(state.id))
-      .map(state => ({
-        ...state,
-        id: state.id || generateId(),
-        globalObjData: Array.from(atob(state.globalObjData), char => char.charCodeAt(0)),
-        entitiesData: Array.from(atob(state.entitiesData), char => char.charCodeAt(0)),
+    const existingSnowboardIds = new Set(baseSnowboardStates.map((s: SnowBoardSaveState) => s.id));
+    const newSnowboardStates = (data.snowboardStates || [])
+      .filter(s => !s.id || !existingSnowboardIds.has(s.id))
+      .map(s => ({
+        ...s,
+        id: s.id || generateId(),
+        globalObjData: Array.from(atob(s.globalObjData), c => c.charCodeAt(0)),
+        entitiesData: Array.from(atob(s.entitiesData), c => c.charCodeAt(0)),
       }));
+
+    const existingWorldIds = new Set(baseWorldStates.map((s: WorldSaveState) => s.id));
+    const newWorldStates = (data.worldStates || [])
+      .filter(s => !s.id || !existingWorldIds.has(s.id))
+      .map(s => ({
+        ...s,
+        id: s.id || generateId(),
+        savemap: Array.from(atob(s.savemap), c => c.charCodeAt(0)),
+      }));
+
+    let newDisplayOrder: string[] | undefined;
+    if (data.displayOrder?.length) {
+      const newIdSet = new Set([
+        ...newFieldStates.map(s => s.id),
+        ...newWorldStates.map(s => s.id),
+      ]);
+      const kept = replace ? [] : displayOrder.filter(id => !newIdSet.has(id));
+      const importedNewIds = data.displayOrder.filter((id: string) => newIdSet.has(id));
+      const importedSet = new Set(importedNewIds);
+      const remainder = [...newFieldStates, ...newWorldStates]
+        .map(s => s.id)
+        .filter(id => !importedSet.has(id));
+      newDisplayOrder = [...kept, ...importedNewIds, ...remainder];
+      setDisplayOrderAtom(newDisplayOrder);
+    } else if (replace) {
+      // No display order in the file — build one from the imported states
+      newDisplayOrder = [
+        ...newFieldStates.map(s => s.id),
+        ...newWorldStates.map(s => s.id),
+      ];
+      setDisplayOrderAtom(newDisplayOrder);
+    }
 
     updateSaveStates({
-      fieldStates: [...saveStates.fieldStates, ...newFieldStates],
-      snowboardStates: [...saveStates.snowboardStates, ...newSnowboardStates],
-    });
-
-    logger.info('Imported states', {
-      fieldImported: newFieldStates.length,
-      snowboardImported: newSnowboardStates.length,
+      fieldStates: [...baseFieldStates, ...newFieldStates],
+      snowboardStates: [...baseSnowboardStates, ...newSnowboardStates],
+      worldStates: [...baseWorldStates, ...newWorldStates],
+      displayOrder: newDisplayOrder,
     });
   };
 
   return {
     fieldStates: saveStates.fieldStates,
     snowboardStates: saveStates.snowboardStates,
+    worldStates,
+    displayOrder,
+    setDisplayOrder,
+    selectedCategoryFilter: generalSettings?.selectedCategoryFilter ?? 'all',
+    lastLoadedFieldStateId,
     pushFieldState,
     pushSnowboardState,
+    pushWorldState,
+    overwriteFieldState,
+    overwriteSnowboardState,
+    overwriteWorldState,
     getLatestFieldState,
     getLatestSnowboardState,
+    getLatestWorldState,
     getFieldState,
     getFieldStateById,
     getSnowboardState,
     getSnowboardStateById,
+    getWorldStateById,
     removeFieldState,
     removeFieldStates,
     removeSnowboardState,
+    removeWorldState,
+    removeStates,
     clearFieldStates,
     clearSnowboardStates,
+    clearWorldStates,
     clearAllStates,
     updateFieldStateTitle,
     updateFieldStateCategory,
+    updateFieldStateCategoriesBulk,
     updateSnowboardStateTitle,
+    updateWorldStateTitle,
+    updateWorldStateCategory,
+    updateWorldStateCategoriesBulk,
     reorderFieldStates,
     exportStates,
     importStates,

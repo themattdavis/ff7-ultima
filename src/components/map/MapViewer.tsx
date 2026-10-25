@@ -9,6 +9,7 @@ import { CAMERA_HEIGHT, MESH_SIZE, SCALE, SHOW_DEBUG } from './constants';
 import { CameraDebugInfo, CameraDebugOverlay } from './components/DebugOverlay';
 import { MapControls } from './components/MapControls';
 import { WorldMesh } from './components/WorldMesh';
+import { WorldChunkDebug } from './components/WorldChunkDebug';
 import { useMapState } from '@/hooks/useMapState';
 import ModelOverlay from './ModelOverlay';
 
@@ -30,7 +31,10 @@ function MapViewer({
   const [rotation, setRotation] = useState(0);
   const [wireframe, setWireframe] = useState(false);
   const [showGrid, setShowGrid] = useState(false);
+  const [showTriangleNumbers, setShowTriangleNumbers] = useState(false);
   const [showModels, setShowModels] = useState(true);
+  const [showHitbox, setShowHitbox] = useState(false);
+  const [showChunkDebug, setShowChunkDebug] = useState(false);
   const [renderingMode, setRenderingMode] = useState<RenderingMode>("textured");
   const [loaded, setLoaded] = useState(false);
   const [followPlayer, setFollowPlayer] = useState(false);
@@ -70,8 +74,20 @@ function MapViewer({
     setShowGrid(prev => !prev);
   };
 
+  const handleTriangleNumbersToggle = () => {
+    setShowTriangleNumbers(prev => !prev);
+  };
+
   const handleModelsToggle = () => {
     setShowModels(prev => !prev);
+  };
+
+  const handleHitboxToggle = () => {
+    setShowHitbox(prev => !prev);
+  };
+
+  const handleChunkDebugToggle = () => {
+    setShowChunkDebug(prev => !prev);
   };
 
   // Calculate map dimensions and center
@@ -335,8 +351,14 @@ function MapViewer({
         onWireframeToggle={handleWireframeToggle}
         showGrid={showGrid}
         onGridToggle={handleGridToggle}
+        showTriangleNumbers={showTriangleNumbers}
+        onTriangleNumbersToggle={handleTriangleNumbersToggle}
         showModels={showModels}
         onModelsToggle={handleModelsToggle}
+        showHitbox={showHitbox}
+        onHitboxToggle={handleHitboxToggle}
+        showChunkDebug={showChunkDebug}
+        onChunkDebugToggle={handleChunkDebugToggle}
         renderingMode={renderingMode}
         onRenderingModeChange={setRenderingMode}
         followPlayer={followPlayer}
@@ -385,11 +407,20 @@ function MapViewer({
               rotation={rotation}
               showGrid={showGrid}
               wireframe={wireframe}
+              showTriangleNumbers={showTriangleNumbers}
               ref={handleWorldMeshRef}
             />
           )}
-          <ModelOverlay zoomRef={zoomRef} visible={showModels} />
+          {/* Same group nesting WorldMesh uses internally (rotate around mapDimensions.center, then
+              shift back) so the pins/hitbox rotate in lockstep with the terrain instead of staying
+              fixed while the mesh spins under them. */}
+          <group position={[mapDimensions.center.x, 0, mapDimensions.center.z]} rotation={[0, rotation, 0]}>
+            <group position={[-mapDimensions.center.x, 0, -mapDimensions.center.z]}>
+              <ModelOverlay zoomRef={zoomRef} visible={showModels} showHitbox={showHitbox} />
+            </group>
+          </group>
         </Canvas>
+        <WorldChunkDebug visible={showChunkDebug} />
       </div>
     </div>
   );

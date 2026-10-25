@@ -11,7 +11,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { EditPopover } from "@/components/EditPopover";
-import { Box, Lightbulb } from "lucide-react";
+import { Box, Lightbulb, Lock } from "lucide-react";
 import { Eye } from "lucide-react";
 import { MessageSquare } from "lucide-react";
 import { FieldLightsModal } from "@/components/modals/FieldLightsModal";
@@ -129,7 +129,7 @@ export function Field(props: { ff7: FF7 }) {
   const state = ff7.gameState;
   const { gameData } = useFF7Context();
   const { addresses } = useFF7Addresses();
-  const { generalSettings, hackSettings, updateHackSettings } = useSettings();
+  const { generalSettings, hackSettings, updateHackSettings, updateGeneralSettings } = useSettings();
   const [isWarpModalOpen, setIsWarpModalOpen] = useState(false);
   const [editValue, setEditValue] = useState("");
   const [editTitle, setEditTitle] = useState("");
@@ -139,6 +139,27 @@ export function Field(props: { ff7: FF7 }) {
   const [isLightsModalOpen, setIsLightsModalOpen] = useState(false);
   const [currentLightsModelIndex, setCurrentLightsModelIndex] = useState<number | null>(null);
   const activeEncounterTable = state.fieldAltEncountersEnabled ? 2 : 1;
+
+  const stepLockEnabled = generalSettings?.stepLockEnabled ?? false;
+
+  const toggleStepLock = () => {
+    if (!generalSettings) return;
+    if (!stepLockEnabled) {
+      updateGeneralSettings({
+        ...generalSettings,
+        stepLockEnabled: true,
+        stepLockValues: {
+          stepId: state.stepId,
+          stepFraction: state.stepFraction,
+          stepOffset: state.stepOffset,
+          formationIndex: state.formationIndex,
+          dangerValue: state.dangerValue,
+        },
+      });
+    } else {
+      updateGeneralSettings({ ...generalSettings, stepLockEnabled: false });
+    }
+  };
   
   const [walkmeshWindow, setWalkmeshWindow] = useState<Window | null>(null);
   const [walkmeshWebview, setWalkmeshWebview] = useState<Webview | null>(null);
@@ -414,7 +435,15 @@ export function Field(props: { ff7: FF7 }) {
       <div className="grid grid-cols-1 gap-x-1">
         <div className="flex-1">
           <Row 
-            label="Step Info"
+            label={
+              <span className="flex items-center gap-3">
+                Step Info
+                <Lock
+                  className={`h-3 w-3 cursor-pointer transition-colors ${stepLockEnabled ? "text-green-500" : "text-zinc-500 hover:text-zinc-300"}`}
+                  onClick={toggleStepLock}
+                />
+              </span>
+            }
           >
             {/* Step Offset */}
             <EditPopover
@@ -427,7 +456,7 @@ export function Field(props: { ff7: FF7 }) {
               <TooltipProvider>
                 <Tooltip delayDuration={250}>
                   <TooltipTrigger asChild>
-                    <span className="bg-zinc-900 px-1 rounded-xl w-[52px] flex justify-between cursor-pointer hover:text-primary" onClick={() => openEditPopover("Step Offset", state.stepOffset.toString())}>
+                    <span className={`bg-zinc-900 px-1 rounded-xl w-[52px] flex justify-between cursor-pointer hover:text-primary ${stepLockEnabled ? "ring-1 ring-green-500" : ""}`} onClick={() => openEditPopover("Step Offset", state.stepOffset.toString())}>
                       <span className="text-xs text-zinc-500 mr-1">Off </span>{state.stepOffset}
                     </span>
                   </TooltipTrigger>
@@ -449,7 +478,7 @@ export function Field(props: { ff7: FF7 }) {
               <TooltipProvider>
                 <Tooltip delayDuration={250}>
                   <TooltipTrigger asChild>
-                    <span className="ml-1 bg-zinc-900 px-1 rounded-xl w-[46px] flex justify-between cursor-pointer hover:text-primary" onClick={() => openEditPopover("Step ID", state.stepId.toString())}>
+                    <span className={`ml-1 bg-zinc-900 px-1 rounded-xl w-[46px] flex justify-between cursor-pointer hover:text-primary ${stepLockEnabled ? "ring-1 ring-green-500" : ""}`} onClick={() => openEditPopover("Step ID", state.stepId.toString())}>
                       <span className="text-xs text-zinc-500 mr-1">ID</span>{state.stepId}
                     </span>
                   </TooltipTrigger>
@@ -471,7 +500,7 @@ export function Field(props: { ff7: FF7 }) {
               <TooltipProvider>
                 <Tooltip delayDuration={250}>
                   <TooltipTrigger asChild>
-                    <span className="ml-1 bg-zinc-900 px-1 rounded-xl w-[56px] flex justify-between cursor-pointer hover:text-primary" onClick={() => openEditPopover("Step Fraction", state.stepFraction.toString())}>
+                    <span className={`ml-1 bg-zinc-900 px-1 rounded-xl w-[56px] flex justify-between cursor-pointer hover:text-primary ${stepLockEnabled ? "ring-1 ring-green-500" : ""}`} onClick={() => openEditPopover("Step Fraction", state.stepFraction.toString())}>
                       <span className="text-xs text-zinc-500 mr-1">Frac</span>{state.stepFraction}
                     </span>
                   </TooltipTrigger>
@@ -493,7 +522,7 @@ export function Field(props: { ff7: FF7 }) {
               <TooltipProvider>
                 <Tooltip delayDuration={250}>
                   <TooltipTrigger asChild>
-                    <span className="ml-1 bg-zinc-900 px-1 rounded-xl min-w-[60px] flex justify-between cursor-pointer hover:text-primary" onClick={() => openEditPopover("Danger Value", state.dangerValue.toString())}>
+                    <span className={`ml-1 bg-zinc-900 px-1 rounded-xl min-w-[60px] flex justify-between cursor-pointer hover:text-primary ${stepLockEnabled ? "ring-1 ring-green-500" : ""}`} onClick={() => openEditPopover("Danger Value", state.dangerValue.toString())}>
                       <span className="text-xs text-zinc-500 mr-1">Dng</span>{state.dangerValue}
                     </span>
                   </TooltipTrigger>
@@ -515,7 +544,7 @@ export function Field(props: { ff7: FF7 }) {
               <TooltipProvider>
                 <Tooltip delayDuration={250}>
                   <TooltipTrigger asChild>
-                    <span className="ml-1 bg-zinc-900 px-1 rounded-xl min-w-[52px] flex justify-between cursor-pointer hover:text-primary" onClick={() => openEditPopover("Formation Index", state.formationIndex.toString())}>
+                    <span className={`ml-1 bg-zinc-900 px-1 rounded-xl min-w-[52px] flex justify-between cursor-pointer hover:text-primary ${stepLockEnabled ? "ring-1 ring-green-500" : ""}`} onClick={() => openEditPopover("Formation Index", state.formationIndex.toString())}>
                       <span className="text-xs text-zinc-500 mr-1">Frm</span>{state.formationIndex}
                     </span>
                   </TooltipTrigger>

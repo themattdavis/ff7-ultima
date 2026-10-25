@@ -25,8 +25,9 @@ export function useFF7(addresses: FF7Addresses) {
   const { connected, gameState, gameData, hacks, setHacks } = useFF7Context();
   const saveStates = useSaveStates();
   const initialized = useRef(false);
-  const { registerCustomShortcut, unregisterCustomShortcut } = useShortcuts();
-  const { generalSettings, hackSettings } = useSettings();
+  const isLoadingStateRef = useRef(false);
+  const { registerCustomShortcut, unregisterCustomShortcut, pauseShortcuts, resumeShortcuts } = useShortcuts();
+  const { generalSettings, hackSettings, updateGeneralSettings } = useSettings();
 
   const codeCaveAddresses = {
     invincibility: addresses.code_cave,
@@ -156,6 +157,14 @@ export function useFF7(addresses: FF7Addresses) {
         if (rememberedHacks.autoSense && hackSettings.autoSense !== undefined && hackSettings.autoSense !== gameState.autoSenseEnabled) {
           await ff7.toggleAutoSense();
         }
+        if (generalSettings?.stepLockEnabled && generalSettings?.stepLockValues) {
+          const { stepId, stepFraction, stepOffset, formationIndex, dangerValue } = generalSettings.stepLockValues;
+          await writeMemory(addresses.step_id, stepId, DataType.Int);
+          await writeMemory(addresses.step_fraction, stepFraction, DataType.Int);
+          await writeMemory(addresses.step_offset, stepOffset, DataType.Byte);
+          await writeMemory(addresses.formation_idx, formationIndex, DataType.Byte);
+          await writeMemory(addresses.danger_value, dangerValue, DataType.Short);
+        }
       }
     }
 
@@ -167,6 +176,17 @@ export function useFF7(addresses: FF7Addresses) {
       initialized.current = false;
     }
   }, [connected, hackSettings]);
+
+  useEffect(() => {
+    if (!connected) return;
+    if (generalSettings?.doubleInputFix) {
+      writeMemory(0x0041B09C, 0x87343D83, DataType.Int);
+      writeMemory(0x0041B0A9, 0xFFFAC6E8, DataType.Int);
+    } else if (generalSettings && !generalSettings.doubleInputFix) {
+      writeMemory(0x0041B09C, 0x85E43D83, DataType.Int);
+      writeMemory(0x0041B0A9, 0xFFFAB9E8, DataType.Int);
+    }
+  }, [connected, generalSettings?.doubleInputFix]);
   
   type FnCall = { address: number; params?: number[] };
 
@@ -229,6 +249,16 @@ export function useFF7(addresses: FF7Addresses) {
     }, 0);
   }
 
+  // Auto-skip FMVs: poll movie_is_playing each cycle and call skipFMV if active
+  if ((generalSettings?.autoSkipFMV ?? false) && gameState.currentModule === GameModule.Field) {
+    setTimeout(async () => {
+      const isMoviePlaying = await readMemory(addresses.movie_is_playing, DataType.Byte);
+      if (isMoviePlaying) {
+        await applyFieldFMVSkip();
+      }
+    }, 0);
+  }
+
 
   // Fixes for softlocks during skip field dialogues
   if (gameState.fieldSkipDialoguesEnabled) {
@@ -286,7 +316,8 @@ export function useFF7(addresses: FF7Addresses) {
 
   // When speed hack is enabled disable temperature dropping on the Great Glacier climbing sections
   const snowFields = [689, 692, 694];
-  if (speedHackEnhancementsOn && parseFloat(gameState.speed) > 1 && snowFields.includes(gameState.fieldId)) {
+  const glacierTempDisabled = (speedHackEnhancementsOn && parseFloat(gameState.speed) > 1) || (generalSettings?.disableGlacierTemp ?? false);
+  if (glacierTempDisabled && snowFields.includes(gameState.fieldId)) {
     // First screen (gaia_1) stores temperature in temp var 9, other screens use temp var 8
     if (gameState.fieldId === 689 && gameState.fieldTmpVars[9] < 37) {
       setTimeout(async () => {
@@ -301,19 +332,61 @@ export function useFF7(addresses: FF7Addresses) {
 
   // Disable the lines that trigger battles in the Whirlwind Maze fields
   const whirlwindMazeFields = [709, 710, 711];
-  if (speedHackEnhancementsOn && parseFloat(gameState.speed) > 1 && whirlwindMazeFields.includes(gameState.fieldId) && gameState.fieldLines[0].enabled === 1) {
+  const whirlwindBattlesDisabled = (speedHackEnhancementsOn && parseFloat(gameState.speed) > 1) || (generalSettings?.disableWhirlwindBattles ?? false);
+  if (whirlwindBattlesDisabled && whirlwindMazeFields.includes(gameState.fieldId) && gameState.fieldLines[0].enabled === 1) {
     setTimeout(async () => {
       await writeMemory(addresses.field_line_objs + 0xc, 0, DataType.Byte);
       await writeMemory(addresses.field_line_objs + 0x18 + 0xc, 0, DataType.Byte);
     }, 0);
   }
   // Re-enable the lines when speed hack is disabled
-  else if ((!speedHackEnhancementsOn || parseFloat(gameState.speed) <= 1) && whirlwindMazeFields.includes(gameState.fieldId) && gameState.fieldLines[0].enabled === 0) {
+  else if (!whirlwindBattlesDisabled && whirlwindMazeFields.includes(gameState.fieldId) && gameState.fieldLines[0].enabled === 0) {
     setTimeout(async () => {
       await writeMemory(addresses.field_line_objs + 0xc, 1, DataType.Byte);
       await writeMemory(addresses.field_line_objs + 0x18 + 0xc, 1, DataType.Byte);
     }, 0);
   }
+
+  // Re-enforce save anywhere if the game resets the menu lock
+  if ((generalSettings?.saveAnywhere ?? false) && Boolean(gameState.menuLocks & (1 << 9))) {
+    setTimeout(async () => {
+      await writeMemory(addresses.menu_locks, gameState.menuLocks & ~(1 << 9), DataType.Short);
+    }, 0);
+  }
+
+  // Re-enforce step lock each tick
+  if (generalSettings?.stepLockEnabled && generalSettings?.stepLockValues && gameState.currentModule === GameModule.Field) {
+    const { stepId, stepFraction, stepOffset, formationIndex, dangerValue } = generalSettings.stepLockValues;
+    setTimeout(async () => {
+      if (gameState.stepId !== stepId) await writeMemory(addresses.step_id, stepId, DataType.Int);
+      if (gameState.stepFraction !== stepFraction) await writeMemory(addresses.step_fraction, stepFraction, DataType.Int);
+      if (gameState.stepOffset !== stepOffset) await writeMemory(addresses.step_offset, stepOffset, DataType.Byte);
+      if (gameState.formationIndex !== formationIndex) await writeMemory(addresses.formation_idx, formationIndex, DataType.Byte);
+      if (gameState.dangerValue !== dangerValue) await writeMemory(addresses.danger_value, dangerValue, DataType.Short);
+    }, 0);
+  }
+
+  // Assign on every render so the closure always has fresh generalSettings/gameState.
+  // A useEffect would delete it during cleanup (whenever step values change), causing
+  // F12 to silently no-op via optional chaining in that brief window.
+  (window as any).__toggleStepLock = () => {
+    if (!generalSettings) return;
+    if (!generalSettings.stepLockEnabled) {
+      updateGeneralSettings({
+        ...generalSettings,
+        stepLockEnabled: true,
+        stepLockValues: {
+          stepId: gameState.stepId,
+          stepFraction: gameState.stepFraction,
+          stepOffset: gameState.stepOffset,
+          formationIndex: gameState.formationIndex,
+          dangerValue: gameState.dangerValue,
+        },
+      });
+    } else {
+      updateGeneralSettings({ ...generalSettings, stepLockEnabled: false });
+    }
+  };
 
   useEffect(() => {
     const registerManualSlotsShortcuts = async () => {
@@ -394,6 +467,44 @@ export function useFF7(addresses: FF7Addresses) {
   }, [gameState.battleQueue, gameState.currentModule, addLogItem]);
 
 
+  // Standalone helper: write the movie_skip byte and apply all field-specific
+  // softlock fixes. Used by both skipFMV() and the auto-skip polling block.
+  const applyFieldFMVSkip = async () => {
+    await writeMemory(addresses.movie_skip, 0x01, DataType.Byte);
+
+    if (gameState.fieldId === 116) {
+      const fieldObjPtr = await getFieldObjPtr();
+      await writeMemory(fieldObjPtr + 0x4c, 0x01, DataType.Byte);
+      await writeMemory(fieldObjPtr + 0x4e, 0xff, DataType.Byte);
+      await writeMemory(fieldObjPtr + 0x50, 0xff, DataType.Byte);
+      await writeMemory(fieldObjPtr + 0x0a, 0x0a, DataType.Byte);
+      await writeMemory(fieldObjPtr + 0x0c, 0x23, DataType.Byte);
+      await writeMemory(fieldObjPtr + 0x1d, 0x4, DataType.Byte);
+      await writeMemory(fieldObjPtr + 0x1f, 0x0, DataType.Byte);
+      await callGameFn(0x742055, [2]);
+    }
+
+    if (gameState.fieldId === 399) {
+      await writeMemory(addresses.field_script_temp_vars + 9, 1, DataType.Byte);
+    } else if (gameState.fieldId === 496) {
+      await writeMemory(addresses.field_script_temp_vars + 8, 180, DataType.Byte);
+    } else if (gameState.fieldId === 543 && gameState.gameMoment === 469) {
+      await writeMemory(addresses.game_moment, 493, DataType.Short);
+      // warpToFieldId is on the ff7 object — replicate inline to avoid forward ref
+      await writeMemory(addresses.field_global_obj + 2, 541, DataType.Short);
+      await writeMemory(addresses.field_global_obj + 1, 1, DataType.Byte);
+    } else if (gameState.fieldId === 489 && gameState.gameMoment >= 592 && gameState.gameMoment <= 595) {
+      await writeMemory(addresses.game_moment, 595, DataType.Short);
+      await writeMemory(addresses.field_global_obj + 2, 488, DataType.Short);
+      await writeMemory(addresses.field_global_obj + 1, 1, DataType.Byte);
+    } else if (gameState.fieldId === 731) {
+      const fieldObjPtr = await getFieldObjPtr();
+      await writeMemory(fieldObjPtr + 0x4c, 0x01, DataType.Byte);
+      await writeMemory(fieldObjPtr + 0x4e, 0xff, DataType.Byte);
+      await writeMemory(fieldObjPtr + 0x50, 0xff, DataType.Byte);
+    }
+  };
+
   const ff7 = {
     connected,
     gameState,
@@ -403,6 +514,8 @@ export function useFF7(addresses: FF7Addresses) {
     saveStates,
     callGameFn,
     callGameFns,
+    pauseShortcuts,
+    resumeShortcuts,
     showGameMessage:  async (text: string, duration: number, color: number = 0x04) => {
       const encodedText = encodeText(text);
       await writeMemory(messageColorAddr, color, DataType.Byte);
@@ -608,47 +721,7 @@ export function useFF7(addresses: FF7Addresses) {
         if (isMoviePlaying === 0) {
           return;
         }
-        await writeMemory(addresses.movie_skip, 0x01, DataType.Byte);
-
-        // Check if we're skipping the intro FMV
-        if (gameState.fieldId === 116) {
-          const fieldObjPtr = await getFieldObjPtr();
-          // Fade
-          await writeMemory(fieldObjPtr + 0x4c, 0x01, DataType.Byte);
-          await writeMemory(fieldObjPtr + 0x4e, 0xff, DataType.Byte);
-          await writeMemory(fieldObjPtr + 0x50, 0xff, DataType.Byte);
-
-          // Scroll
-          await writeMemory(fieldObjPtr + 0x0a, 0x0a, DataType.Byte);
-          await writeMemory(fieldObjPtr + 0x0c, 0x23, DataType.Byte);
-          await writeMemory(fieldObjPtr + 0x1d, 0x4, DataType.Byte);
-          await writeMemory(fieldObjPtr + 0x1f, 0x0, DataType.Byte);
-
-          // Play opening bombing mission music
-          await callGameFn(0x742055, [2])
-        }
-
-        if (gameState.fieldId === 399) {
-          // Junon office - prevent softlock when Heidegger orders shooting the canon
-          await writeMemory(addresses.field_script_temp_vars + 9, 1, DataType.Byte);
-        } else if (gameState.fieldId === 496) {
-          // Gold Saucer rope station softlock
-          await writeMemory(addresses.field_script_temp_vars + 8, 180, DataType.Byte);
-        } else if (gameState.fieldId === 543 && gameState.gameMoment === 469) {
-          // Bugenhagen observatory softlock
-          await writeMemory(addresses.game_moment, 493, DataType.Short);
-          await this.warpToFieldId(541);
-        } else if (gameState.fieldId === 489 && gameState.gameMoment >= 592 && gameState.gameMoment <= 595) {
-          // Gold Saucer date scene softlock
-          await writeMemory(addresses.game_moment, 595, DataType.Short);
-          await this.warpToFieldId(488);
-        } else if (gameState.fieldId === 731) {
-          // Midgar Raid softlock - fix the fade out
-          const fieldObjPtr = await getFieldObjPtr();
-          await writeMemory(fieldObjPtr + 0x4c, 0x01, DataType.Byte);
-          await writeMemory(fieldObjPtr + 0x4e, 0xff, DataType.Byte);
-          await writeMemory(fieldObjPtr + 0x50, 0xff, DataType.Byte);
-        } 
+        await applyFieldFMVSkip();
       } else if ([GameModule.SnowBoard, GameModule.Snowboard2].includes(gameState.currentModule)) {
         await writeMemory(0xdd7cac, 0, DataType.Byte);
       } else if (gameState.currentModule === GameModule.Highway) {
@@ -1034,6 +1107,32 @@ export function useFF7(addresses: FF7Addresses) {
         category
       });
     },
+    async overwriteFieldState(stateId: string) {
+      const memory = await readMemoryBuffer(addresses.savemap, 0x10F4)
+
+      const regions = [];
+      for (const region of SaveRegions) {
+        const start = await readMemoryBuffer(region[0], region[1] - region[0]);
+        regions.push(start);
+      }
+
+      const fieldModel = gameState.fieldModels[gameState.fieldCurrentModelId];
+      const destination = {
+        x: fieldModel.x,
+        y: fieldModel.y,
+        z: fieldModel.z,
+        direction: fieldModel.direction,
+        triangle: fieldModel.triangle
+      }
+
+      saveStates.overwriteFieldState(stateId, {
+        savemap: memory,
+        regions,
+        fieldId: gameState.fieldId,
+        fieldName: gameState.fieldName,
+        destination,
+      });
+    },
     async loadFieldState(stateId?: string) {
       const state = stateId !== undefined ? saveStates.getFieldStateById(stateId) : saveStates.getLatestFieldState();
       if (!state) return;
@@ -1066,8 +1165,11 @@ export function useFF7(addresses: FF7Addresses) {
 
       // Use regionOffsets from the save state if available, otherwise fall back to SaveRegions
       const regionOffsets = state.regionOffsets || SaveRegions;
-      
-      setTimeout(async () => {
+
+      // Delay is intentional — wait for the field to finish initialising before writing regions.
+      // Must be awaited so the isLoadingStateRef lock in loadState covers these writes.
+      await new Promise(resolve => setTimeout(resolve, 100));
+      try {
         for (let i = 0; i < state.regions.length; i++) {
           const length = regionOffsets[i][1] - regionOffsets[i][0];
           const start = regionOffsets[i][0];
@@ -1080,7 +1182,9 @@ export function useFF7(addresses: FF7Addresses) {
           await writeMemory(addr, 0, DataType.Int);
           await writeMemory(addr + 4, 0, DataType.Int);
         }
-      }, 100);
+      } catch (e) {
+        console.warn("loadFieldState: error writing regions", e);
+      }
 
       // Restore the tick function
       // await writeMemory(tickFunctionAddr, tickFunctionPtr, DataType.Int);
@@ -1095,6 +1199,14 @@ export function useFF7(addresses: FF7Addresses) {
         title
       });
     },
+    async overwriteSnowBoardState(stateId: string) {
+      const globalObjData = await readMemoryBuffer(0xdd83b8, 0x2be0);
+      const entitiesData = await readMemoryBuffer(0xddaf98, 0x90 * 0x20);
+      saveStates.overwriteSnowboardState(stateId, {
+        globalObjData,
+        entitiesData,
+      });
+    },
     async loadSnowBoardState(stateId?: string) {
       const state = stateId !== undefined ? saveStates.getSnowboardStateById(stateId) : saveStates.getLatestSnowboardState();
       if (!state) return;
@@ -1103,18 +1215,414 @@ export function useFF7(addresses: FF7Addresses) {
       await writeMemory(0xdd83b8 + 0x64, 0, DataType.Int);
       await writeMemory(0xddaf98, state.entitiesData, DataType.Buffer);
     },
+    async saveWorldState(title?: string, category?: string) {
+      const memory = await readMemoryBuffer(addresses.savemap, 0x10F4);
+      const currentObjPtr = await readMemory(addresses.world_current_obj_ptr, DataType.Int);
+      const worldX = await readMemory(currentObjPtr + 0x0C, DataType.Int);
+      const worldY = await readMemory(currentObjPtr + 0x10, DataType.Int);
+      const worldZ = await readMemory(currentObjPtr + 0x14, DataType.Int);
+      const worldDirection = await readMemory(currentObjPtr + 0x40, DataType.Int);
+
+      // Save coords keyed by model_id so they can be restored to the correct
+      // slot even when a different world script is active (different model counts/order).
+      const modelCoords = gameState.worldModels.map(m => ({
+        model_id: m.model_id,
+        x: m.x,
+        y: m.y,
+        z: m.z,
+        direction: m.direction,
+      }));
+
+      // Update the packed position slots (savemap+0xF5C, D_00DC0C94) with the
+      // current live model positions before saving.  The game only writes these
+      // slots via C_007660DB when the player *leaves* the world map, so for saves
+      // taken while on the world map the savemap copy is stale.  Packing correct
+      // values here means C_00759A65 will restore models to the right positions
+      // when this state is loaded, regardless of how the load is timed.
+      //
+      // Bit layout per t_wm_local_8_rrr (ff7_worldmap_save_load.docx §6):
+      //   f_00  bits[18:0]  = X (19-bit)
+      //         bits[23:19] = f_50_model (5-bit game model-type id)
+      //         bits[31:24] = heading >> 4 (upper 8 bits of 12-bit heading)
+      //   f_04  bits[17:0]  = Z (18-bit)
+      //         bits[31:18] = Y (14-bit signed)
+      const modelTypeToSlot: Record<number, number> = {
+        0: 0, 1: 0, 2: 0,   // Cloud / Tifa / Cid on foot  → slot 0
+        4: 1,                 // Chocobo                     → slot 1
+        5: 2, 19: 2,          // Tiny Bronco / Gold Chocobo  → slot 2
+        3: 3, 6: 3,           // Highwind / Buggy            → slot 3
+        13: 4,                // Submarine                   → slot 4
+        10: 5, 11: 5, 29: 5,  // Misc                        → slot 5
+      };
+      const mutableMemory = Array.from(memory as ArrayLike<number>);
+      const PACKED_BASE = 0xF5C;
+      for (const m of gameState.worldModels) {
+        const slot = modelTypeToSlot[m.model_id];
+        if (slot === undefined || slot >= 6) continue;
+        const f_00 = (m.x & 0x7FFFF) |
+                     ((m.model_id & 0x1F) << 19) |
+                     (((m.direction >>> 4) & 0xFF) << 24);
+        const f_04 = (m.z & 0x3FFFF) | ((m.y & 0x3FFF) << 18);
+        const f_00u = f_00 >>> 0;
+        const f_04u = f_04 >>> 0;
+        const off = PACKED_BASE + slot * 8;
+        mutableMemory[off]     =  f_00u         & 0xFF;
+        mutableMemory[off + 1] = (f_00u >>> 8)  & 0xFF;
+        mutableMemory[off + 2] = (f_00u >>> 16) & 0xFF;
+        mutableMemory[off + 3] = (f_00u >>> 24) & 0xFF;
+        mutableMemory[off + 4] =  f_04u         & 0xFF;
+        mutableMemory[off + 5] = (f_04u >>> 8)  & 0xFF;
+        mutableMemory[off + 6] = (f_04u >>> 16) & 0xFF;
+        mutableMemory[off + 7] = (f_04u >>> 24) & 0xFF;
+      }
+
+      saveStates.pushWorldState({
+        savemap: mutableMemory,
+        worldX,
+        worldY,
+        worldZ,
+        worldDirection,
+        worldMapType: gameState.worldMapType,
+        modelCoords,
+        title,
+        category,
+      });
+    },
+    async overwriteWorldState(stateId: string) {
+      const memory = await readMemoryBuffer(addresses.savemap, 0x10F4);
+      const currentObjPtr = await readMemory(addresses.world_current_obj_ptr, DataType.Int);
+      const worldX = await readMemory(currentObjPtr + 0x0C, DataType.Int);
+      const worldY = await readMemory(currentObjPtr + 0x10, DataType.Int);
+      const worldZ = await readMemory(currentObjPtr + 0x14, DataType.Int);
+      const worldDirection = await readMemory(currentObjPtr + 0x40, DataType.Int);
+
+      const modelCoords = gameState.worldModels.map(m => ({
+        model_id: m.model_id,
+        x: m.x,
+        y: m.y,
+        z: m.z,
+        direction: m.direction,
+      }));
+
+      // See saveWorldState for the rationale behind packing live model
+      // positions into the savemap before saving.
+      const modelTypeToSlot: Record<number, number> = {
+        0: 0, 1: 0, 2: 0,   // Cloud / Tifa / Cid on foot  → slot 0
+        4: 1,                 // Chocobo                     → slot 1
+        5: 2, 19: 2,          // Tiny Bronco / Gold Chocobo  → slot 2
+        3: 3, 6: 3,           // Highwind / Buggy            → slot 3
+        13: 4,                // Submarine                   → slot 4
+        10: 5, 11: 5, 29: 5,  // Misc                        → slot 5
+      };
+      const mutableMemory = Array.from(memory as ArrayLike<number>);
+      const PACKED_BASE = 0xF5C;
+      for (const m of gameState.worldModels) {
+        const slot = modelTypeToSlot[m.model_id];
+        if (slot === undefined || slot >= 6) continue;
+        const f_00 = (m.x & 0x7FFFF) |
+                     ((m.model_id & 0x1F) << 19) |
+                     (((m.direction >>> 4) & 0xFF) << 24);
+        const f_04 = (m.z & 0x3FFFF) | ((m.y & 0x3FFF) << 18);
+        const f_00u = f_00 >>> 0;
+        const f_04u = f_04 >>> 0;
+        const off = PACKED_BASE + slot * 8;
+        mutableMemory[off]     =  f_00u         & 0xFF;
+        mutableMemory[off + 1] = (f_00u >>> 8)  & 0xFF;
+        mutableMemory[off + 2] = (f_00u >>> 16) & 0xFF;
+        mutableMemory[off + 3] = (f_00u >>> 24) & 0xFF;
+        mutableMemory[off + 4] =  f_04u         & 0xFF;
+        mutableMemory[off + 5] = (f_04u >>> 8)  & 0xFF;
+        mutableMemory[off + 6] = (f_04u >>> 16) & 0xFF;
+        mutableMemory[off + 7] = (f_04u >>> 24) & 0xFF;
+      }
+
+      saveStates.overwriteWorldState(stateId, {
+        savemap: mutableMemory,
+        worldX,
+        worldY,
+        worldZ,
+        worldDirection,
+        worldMapType: gameState.worldMapType,
+        modelCoords,
+      });
+    },
+    async loadWorldState(stateId?: string) {
+      const state = stateId !== undefined
+        ? saveStates.getWorldStateById(stateId)
+        : saveStates.getLatestWorldState();
+      if (!state) return;
+
+      // Helper: write the new savemap to memory.
+      // state.savemap already has correctly packed position slots at +0xF5C
+      // (written by saveWorldState). Do NOT add extra partial writes here —
+      // they corrupt the model-ID and heading bits packed into the same bytes.
+      const writeNewSavemap = async () => {
+        await writeMemory(addresses.savemap, state.savemap, DataType.Buffer);
+      };
+
+      const restoreModels = async () => {
+        if (!state.modelCoords) return;
+        // If coords were saved with model_id, match by model_id to the current live
+        // world model slots. Different world scripts put different models at different
+        // slot indices, so a raw index write would corrupt positions across scripts.
+        const hasModeIds = state.modelCoords.length > 0 && state.modelCoords[0].model_id !== undefined;
+        if (hasModeIds) {
+          // Build a map from model_id -> current slot index using the live world models
+          const currentSlotByModelId = new Map<number, number>();
+          for (const liveModel of gameState.worldModels) {
+            currentSlotByModelId.set(liveModel.model_id, liveModel.index);
+          }
+          // Write coords for models present in the saved state
+          for (const m of state.modelCoords) {
+            if (m.model_id === undefined) continue;
+            const slotIndex = currentSlotByModelId.get(m.model_id);
+            if (slotIndex === undefined) continue;
+            const base = addresses.world_models + slotIndex * 192;
+            await writeMemory(base + 0x0C, m.x, DataType.Int);
+            await writeMemory(base + 0x10, m.y, DataType.Int);
+            await writeMemory(base + 0x14, m.z, DataType.Int);
+            await writeMemory(base + 0x40, m.direction, DataType.Int);
+          }
+        } else {
+          // Legacy: old saves without model_id — fall back to raw index restore
+          for (let i = 0; i < state.modelCoords.length; i++) {
+            const base = addresses.world_models + i * 192;
+            const m = state.modelCoords[i];
+            await writeMemory(base + 0x0C, m.x, DataType.Int);
+            await writeMemory(base + 0x10, m.y, DataType.Int);
+            await writeMemory(base + 0x14, m.z, DataType.Int);
+            await writeMemory(base + 0x40, m.direction, DataType.Int);
+          }
+        }
+      };
+
+      // Map FF7 character ID to C_00759A65 parameter (Cloud=0, Tifa=1, Cid=2)
+      const characterModelIndex: Record<number, number> = { 0: 0, 2: 1, 8: 2 };
+      const reloadCharacterModel = async () => {
+        // Read from the savemap mirror of party_member_ids (0x7B5 offset).
+        // writeNewSavemap() must have been called before this so the mirror
+        // reflects the new leader.
+        const leaderId = await readMemory(addresses.party_member_ids + 0x7B5, DataType.Byte);
+        const partyMirror = await readMemoryBuffer(addresses.party_member_ids + 0x7B5, 3);
+        await writeMemory(addresses.party_member_ids, partyMirror, DataType.Buffer);
+        const modelParam = characterModelIndex[leaderId];
+        if (modelParam !== undefined) {
+          await callGameFn(0x00759A65, [modelParam]);
+        }
+      };
+
+      if (gameState.currentModule === GameModule.World) {
+        try {
+          // Determine whether the set of vehicle/character models in the saved
+          // state matches the set that is currently live on the world map.
+          // World models are spawned by the world script during map initialisation
+          // and cannot be added or removed in-place — if the sets differ we must
+          // force a full world reinit via a field bounce.
+          const currentModelIds = new Set(gameState.worldModels.map(m => m.model_id));
+          const savedModelIds = new Set(
+            (state.modelCoords || [])
+              .map(m => m.model_id)
+              .filter((id): id is number => id !== undefined)
+          );
+          const modelSetsDiffer =
+            [...currentModelIds].some(id => !savedModelIds.has(id)) ||
+            [...savedModelIds].some(id => !currentModelIds.has(id));
+
+          // Determine the field to bounce through.
+          //
+          // addresses.field_id CANNOT be used: when the world map is running it
+          // holds the wm* entry trigger ID (1 = main world map, 2 = Icicle,
+          // 3 = Crater, 4 = Underwater) — not the last real field visited.
+          // wm* IDs (1-64) are not valid field-module targets and would either
+          // crash or soft-lock if used as a bounce destination.
+          //
+          // Instead, use the most recently saved FIELD state's fieldId.
+          // Field states are always captured from a running field module so
+          // their fieldId is guaranteed to be a real, loadable field (> 64).
+          // We only need the ID — destination coords are irrelevant because we
+          // warp straight out again as soon as the field module starts.
+          const bounceFieldState = saveStates.fieldStates
+            .slice()
+            .reverse()
+            .find(s => s.fieldId > 64);
+          const bounceFieldId = bounceFieldState?.fieldId;
+
+          if (modelSetsDiffer && bounceFieldId !== undefined) {
+            // ── Bounce path: world → real field → world ───────────────────────
+            //
+            // Critical ordering: the savemap must NOT be written before the
+            // world exits. When world_mode = 2 is set, C_0076609E runs
+            // automatically on exit and calls C_007660DB for every live world
+            // object, which packs their current positions back into
+            // savemap+0xF5C. If we had already written the new savemap there,
+            // C_007660DB would overwrite our target positions with the current
+            // (wrong) ones. Instead:
+            //
+            //   Step 1 — exit world using OLD savemap (C_007660DB runs cleanly,
+            //             the bounce field's scripts see a consistent savemap)
+            //   Step 2 — while in the field, write the NEW savemap
+            //             (C_0076616A will read it during the upcoming reinit)
+            //   Step 3 — re-enter world; C_0076616A spawns correct models
+            //             at the correct packed positions
+            //
+            // We inline both warp triggers rather than calling warpToFieldId()
+            // because gameState.currentModule is a stale React closure — it
+            // reads GameModule.World even after the game has transitioned to the
+            // field, causing warpToFieldId to write world-mode registers into a
+            // running field module and crash.
+
+            // ── Step 1: world → bounce field (old savemap) ───────────────────
+            // Write fade=33 (the maximum, meaning instant black) synchronously
+            // before triggering the world exit so there is no visible world-map
+            // frame after the user loads the state.
+            await writeMemory(addresses.field_global_obj + 0x4e, 33, DataType.Byte);
+            await writeMemory(addresses.field_global_obj + 2, bounceFieldId, DataType.Short);
+            await writeMemory(addresses.world_battle_flag3, 0, DataType.Byte);
+            await writeMemory(addresses.world_mode, 2, DataType.Byte);
+            await writeMemory(addresses.world_mode + 0xC, 1, DataType.Byte);
+            // Sound reset intentionally omitted for the bounce — it adds 100 ms
+            // of visible delay and the world re-entry will reset audio anyway.
+
+            const t1 = Date.now();
+            await waitFor(async () => {
+              if (Date.now() - t1 > 10000) return true;
+              const mod = await readMemory(addresses.current_module, DataType.Byte);
+              const fid = await readMemory(addresses.field_id, DataType.Short);
+              return mod === GameModule.Field && fid === bounceFieldId;
+            });
+
+            // ── Step 2: write new savemap while safely in the field ───────────
+            await writeNewSavemap();
+
+            // ── Step 3: field → world (new savemap) ──────────────────────────
+            // Mirror warpToFieldId's field→world pattern exactly — this is
+            // what works in the field→world path of loadWorldState.
+            // Do NOT write fade_type here: fade_type is in modules_global_object
+            // which persists across module transitions. Writing fade_type=4
+            // carries into the world module and blocks its entry script,
+            // leaving Cloud at default wm0 coords. Use 0x4e (fade-out speed
+            // trigger for the currently-running module) via setTimeout instead,
+            // exactly as warpToFieldId does.
+            const worldEntryId = state.worldMapType + 1;
+            await writeMemory(addresses.field_global_obj + 2, worldEntryId, DataType.Short);
+            await writeMemory(addresses.field_global_obj + 1, 1, DataType.Byte);
+            setTimeout(async () => {
+              await writeMemory(addresses.field_global_obj + 0x4e, 33, DataType.Byte);
+            }, 75);
+
+            // Wait for world module — same as the working field→world path.
+            const t2 = Date.now();
+            await waitFor(async () => {
+              if (Date.now() - t2 > 10000) return true;
+              return (await readMemory(addresses.current_module, DataType.Byte)) === GameModule.World;
+            });
+
+            // Wait 150ms after world module starts — same as working path.
+            await new Promise(resolve => setTimeout(resolve, 150));
+
+            // Write coords via world_current_obj_ptr — same as working path.
+            const currentObjPtr = await readMemory(addresses.world_current_obj_ptr, DataType.Int);
+            if (currentObjPtr) {
+              await writeMemory(currentObjPtr + 0x0C, state.worldX, DataType.Int);
+              await writeMemory(currentObjPtr + 0x10, state.worldY, DataType.Int);
+              await writeMemory(currentObjPtr + 0x14, state.worldZ, DataType.Int);
+              await writeMemory(currentObjPtr + 0x40, state.worldDirection, DataType.Int);
+            }
+            // restoreModels() intentionally omitted — C_0076616A already
+            // placed every model from the packed savemap slots during reinit.
+            // The restoreModels closure holds a stale pre-bounce snapshot of
+            // gameState.worldModels and would write to wrong slot indices.
+
+          } else {
+            // ── In-place path: model sets match (or no field states to bounce through) ─
+            // Just write the new savemap and update all model positions directly.
+            // reloadCharacterModel / C_00759A65 is intentionally NOT called here:
+            // that function allocates a new world-model object and is only safe
+            // to call during world-map initialisation. Calling it in-place while
+            // the world map is already running spawns a second (invisible)
+            // character model on top of the existing one.
+            if (modelSetsDiffer) {
+              console.warn("loadWorldState: model sets differ but no valid bounce field available (no field states saved) — falling back to in-place restore");
+            }
+            await writeNewSavemap();
+            await new Promise(resolve => setTimeout(resolve, 100));
+            await restoreModels();
+            const currentObjPtr = await readMemory(addresses.world_current_obj_ptr, DataType.Int);
+            if (currentObjPtr) {
+              await writeMemory(currentObjPtr + 0x0C, state.worldX, DataType.Int);
+              await writeMemory(currentObjPtr + 0x10, state.worldY, DataType.Int);
+              await writeMemory(currentObjPtr + 0x14, state.worldZ, DataType.Int);
+              await writeMemory(currentObjPtr + 0x40, state.worldDirection, DataType.Int);
+            }
+          }
+        } catch (e) {
+          console.warn("loadWorldState: error restoring world state", e);
+        }
+      } else if (gameState.currentModule === GameModule.Field) {
+        try {
+          await writeNewSavemap();
+          await this.warpToFieldId(state.worldMapType + 1);
+
+          const maxWait = 10000;
+          const startTime = Date.now();
+          await waitFor(async () => {
+            if (Date.now() - startTime > maxWait) return true;
+            const mod = await readMemory(addresses.current_module, DataType.Byte);
+            return mod === GameModule.World;
+          });
+
+          await new Promise(resolve => setTimeout(resolve, 150));
+
+          const currentObjPtr = await readMemory(addresses.world_current_obj_ptr, DataType.Int);
+          if (!currentObjPtr) {
+            console.warn("loadWorldState: world_current_obj_ptr is null after warp, skipping coordinate restore");
+            return;
+          }
+          await writeMemory(currentObjPtr + 0x0C, state.worldX, DataType.Int);
+          await writeMemory(currentObjPtr + 0x10, state.worldY, DataType.Int);
+          await writeMemory(currentObjPtr + 0x14, state.worldZ, DataType.Int);
+          await writeMemory(currentObjPtr + 0x40, state.worldDirection, DataType.Int);
+          await restoreModels();
+        } catch (e) {
+          console.warn("loadWorldState: error during field-to-world transition", e);
+        }
+      }
+    },
     async saveState(title?: string, category?: string) {
+      if (isLoadingStateRef.current) return;
       if (gameState.currentModule === GameModule.Field) {
         await this.saveFieldState(title, category);
+      } else if (gameState.currentModule === GameModule.World) {
+        await this.saveWorldState(title, category);
       } else if (gameState.currentModule === GameModule.Snowboard2) {
         await this.saveSnowBoardState(title);
       }
     },
     async loadState(stateId?: string) {
-      if (gameState.currentModule === GameModule.Field || gameState.currentModule === GameModule.World) {
-        await this.loadFieldState(stateId);
-      } else if (gameState.currentModule === GameModule.Snowboard2) {
-        await this.loadSnowBoardState(stateId);
+      if (isLoadingStateRef.current) return;
+      isLoadingStateRef.current = true;
+      try {
+        if (stateId !== undefined) {
+          if (saveStates.getFieldStateById(stateId)) {
+            await this.loadFieldState(stateId);
+          } else if (saveStates.getWorldStateById(stateId)) {
+            await this.loadWorldState(stateId);
+          } else if (saveStates.getSnowboardStateById(stateId)) {
+            await this.loadSnowBoardState(stateId);
+          }
+        } else {
+          if (gameState.currentModule === GameModule.World) {
+            await this.loadWorldState();
+          } else if (gameState.currentModule === GameModule.Field) {
+            await this.loadFieldState();
+          } else if (gameState.currentModule === GameModule.Snowboard2) {
+            await this.loadSnowBoardState();
+          }
+        }
+      } catch (e) {
+        console.error("loadState: unexpected error, state load aborted", e);
+      } finally {
+        isLoadingStateRef.current = false;
       }
     },
     async warpToFieldId(id: number, destination?: Destination) {
