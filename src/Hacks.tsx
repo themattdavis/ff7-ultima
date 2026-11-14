@@ -7,6 +7,7 @@ import { FF7 } from "./useFF7";
 import { useEffect } from "react";
 import { useSettings } from "./useSettings";
 import { writeMemory, DataType } from "./memory";
+import { applyDoubleInputFix } from "./doubleInputFix";
 
 export function Hacks(props: { ff7: FF7, tab: Tabs }) {
   const ff7 = props.ff7;
@@ -91,20 +92,12 @@ export function Hacks(props: { ff7: FF7, tab: Tabs }) {
     updateGeneralSettings({ ...generalSettings!, saveAnywhere: newValue });
   };
 
-  // ...
-  <Row label="Save anywhere">
-    <Switch checked={saveAnywhere} onClick={toggleSaveAnywhere} />
-  </Row>
-
-  // Add the toggle function alongside the others:
   const toggleDoubleInputFix = async () => {
     const newValue = !(generalSettings?.doubleInputFix ?? false);
-    if (newValue) {
-      await writeMemory(0x0041B09C, 0x87343D83, DataType.Int);
-      await writeMemory(0x0041B0A9, 0xFFFAC6E8, DataType.Int);
-    } else {
-      await writeMemory(0x0041B09C, 0x85E43D83, DataType.Int);
-      await writeMemory(0x0041B0A9, 0xFFFAB9E8, DataType.Int);
+    const result = await applyDoubleInputFix(newValue);
+    if (result === "skipped") {
+      showAlert("Double Input Fix", "The game code at the patch addresses is not what this hack expects (another mod or driver has changed it), so nothing was written.");
+      return;
     }
     updateGeneralSettings({ ...generalSettings!, doubleInputFix: newValue });
   };

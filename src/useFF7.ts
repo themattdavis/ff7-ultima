@@ -15,6 +15,7 @@ import { SaveRegions, useSaveStates } from "./useSaveStates";
 import { useShortcuts } from "./useShortcuts";
 import { useBattleLog } from "./hooks/useBattleLog";
 import { encodeText } from "./ff7/fftext";
+import { applyDoubleInputFix } from "./doubleInputFix";
 
 const hex = (str: string) => str.split(" ").map((s) => parseInt(s, 16));
 let messageTimeout: number | null = null;
@@ -177,17 +178,16 @@ export function useFF7(addresses: FF7Addresses) {
     }
   }, [connected, hackSettings]);
 
+  // Only act when the fix is switched on. When it's off we leave the exe alone
+  // (the old code wrote "vanilla" bytes over the code on every connect, which
+  // clobbers patches made by FFNx-based drivers and crashes the game).
   useEffect(() => {
-    if (!connected) return;
-    if (generalSettings?.doubleInputFix) {
-      writeMemory(0x0041B09C, 0x87343D83, DataType.Int);
-      writeMemory(0x0041B0A9, 0xFFFAC6E8, DataType.Int);
-    } else if (generalSettings && !generalSettings.doubleInputFix) {
-      writeMemory(0x0041B09C, 0x85E43D83, DataType.Int);
-      writeMemory(0x0041B0A9, 0xFFFAB9E8, DataType.Int);
-    }
+    if (!connected || !generalSettings) return;
+    applyDoubleInputFix(!!generalSettings.doubleInputFix).catch((e) =>
+      console.warn("Double Input Fix failed", e)
+    );
   }, [connected, generalSettings?.doubleInputFix]);
-  
+
   type FnCall = { address: number; params?: number[] };
 
   const callGameFns = async (fns: FnCall[]) => {
