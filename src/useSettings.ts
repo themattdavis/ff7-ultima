@@ -98,9 +98,6 @@ export type WorldSaveState = SaveStateBase & {
   worldDirection: number;
   worldMapType: number;
   modelCoords: { x: number; y: number; z: number; direction: number; model_id?: number }[];
-  // A real field (id > 64) that was visited before this state was captured, used
-  // to bounce through when the state is loaded so the world map fully reloads.
-  bounceFieldId?: number;
   // Random-encounter values, saved and restored like field states do.
   stepValues?: { stepId: number; stepFraction: number; stepOffset: number; formationIndex: number; dangerValue: number };
 };

@@ -18,28 +18,6 @@ import { encodeText } from "./ff7/fftext";
 import { applyDoubleInputFix } from "./doubleInputFix";
 
 const hex = (str: string) => str.split(" ").map((s) => parseInt(s, 16));
-// Last real field (id > 64) the player was in. Loading a world state has to bounce
-// through a real field to make the game rebuild the world map's models, and the
-// field id read while on the world map is only a world-map entry id (1-64), so
-// remember the last real one (also across restarts).
-const LAST_REAL_FIELD_KEY = "ff7-ultima:lastRealFieldId";
-let lastRealFieldId: number | undefined = (() => {
-  try {
-    const id = Number(localStorage.getItem(LAST_REAL_FIELD_KEY));
-    return id > 64 ? id : undefined;
-  } catch {
-    return undefined;
-  }
-})();
-const rememberRealField = (id: number) => {
-  if (id <= 64 || id === lastRealFieldId) return;
-  lastRealFieldId = id;
-  try {
-    localStorage.setItem(LAST_REAL_FIELD_KEY, String(id));
-  } catch {
-    // storage unavailable, keep the in-memory value
-  }
-};
 let messageTimeout: number | null = null;
 let messageColorAddr: number = 0;
 let functionCallerAddr: number = 0;
@@ -210,12 +188,6 @@ export function useFF7(addresses: FF7Addresses) {
     );
   }, [connected, generalSettings?.doubleInputFix]);
 
-  useEffect(() => {
-    if (gameState.currentModule === GameModule.Field && gameState.fieldId > 64) {
-      rememberRealField(gameState.fieldId);
-    }
-  }, [gameState.currentModule, gameState.fieldId]);
-
   type FnCall = { address: number; params?: number[] };
 
   const callGameFns = async (fns: FnCall[]) => {
@@ -251,6 +223,10 @@ export function useFF7(addresses: FF7Addresses) {
   const WORLD_CAMERA_FRONT = 0x00dfc484; // g_WorldCameraFront
   const WORLD_MAP_INITIALIZED = 0x00de69e0; // g_WorldMapInitialized
   const SAVEMAP_WORLD_CAMERA_STATE = 0xf9c; // gSavemap.worldCameraState (u16)
+  // Field the world state load bounces through. It only has to be a real field
+  // (id > 64: ids 1-64 are world map entries). Field 65 has no music, so nothing
+  // audible plays during the bounce.
+  const WORLD_BOUNCE_FIELD_ID = 65;
   const WORLD_ACTOR_SIZE = 0xc0;
   const WORLD_ACTOR_COUNT = 16;
 
@@ -433,7 +409,6 @@ export function useFF7(addresses: FF7Addresses) {
       worldDirection,
       worldMapType: gameState.worldMapType,
       modelCoords,
-      bounceFieldId: lastRealFieldId,
       stepValues: await readStepValues(),
     };
   };
@@ -1539,20 +1514,12 @@ export function useFF7(addresses: FF7Addresses) {
           // own load, so always force a full reload by bouncing through a real
           // field. An in-place restore can only move actors that already exist.
           //
-          // Field to bounce through: addresses.field_id CANNOT be used, while the
-          // world map runs it holds the wm* entry id (1-64), not a loadable
-          // field. Use the last real field the player was in (tracked, and also
-          // stored with the state), falling back to a saved field state. Only the
-          // id matters, we warp straight out again.
-          const bounceFieldId =
-            lastRealFieldId ??
-            (state.bounceFieldId && state.bounceFieldId > 64 ? state.bounceFieldId : undefined) ??
-            saveStates.fieldStates
-              .slice()
-              .reverse()
-              .find(s => s.fieldId > 64)?.fieldId;
+          // Field to bounce through. addresses.field_id cannot be used: while the
+          // world map runs it holds the wm* entry id (1-64), not a loadable field.
+          // Only the id matters, we warp straight out again.
+          const bounceFieldId = WORLD_BOUNCE_FIELD_ID;
 
-          if (bounceFieldId !== undefined) {
+          {
             // ── world → real field → world ────────────────────────────────
             // The savemap must NOT be written before the world is left: on
             // exit the game packs the live actors into savemap+0xF5C
@@ -1608,15 +1575,6 @@ export function useFF7(addresses: FF7Addresses) {
             // switch: before the load completes the player pointer is null or
             // stale and the load itself would overwrite our writes.
             await waitForWorldReady();
-            await restoreModels();
-            await finishRestore();
-          } else {
-            // No real field known yet: best effort in place. This moves the models
-            // that exist but cannot rebuild the world. Visiting any field once
-            // (or loading a field state) makes world loads fully reliable.
-            console.warn("loadWorldState: no real field known to bounce through (visit any field once, or load a field state), restoring in place so models will not rebuild");
-            await writeNewSavemap();
-            await sleep(100);
             await restoreModels();
             await finishRestore();
           }
