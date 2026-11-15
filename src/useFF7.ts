@@ -18,6 +18,28 @@ import { encodeText } from "./ff7/fftext";
 import { applyDoubleInputFix } from "./doubleInputFix";
 
 const hex = (str: string) => str.split(" ").map((s) => parseInt(s, 16));
+// Last real field (id > 64) the player was in. Loading a world state has to bounce
+// through a real field to make the game rebuild the world map's models, and the
+// field id read while on the world map is only a world-map entry id (1-64), so
+// remember the last real one (also across restarts).
+const LAST_REAL_FIELD_KEY = "ff7-ultima:lastRealFieldId";
+let lastRealFieldId: number | undefined = (() => {
+  try {
+    const id = Number(localStorage.getItem(LAST_REAL_FIELD_KEY));
+    return id > 64 ? id : undefined;
+  } catch {
+    return undefined;
+  }
+})();
+const rememberRealField = (id: number) => {
+  if (id <= 64 || id === lastRealFieldId) return;
+  lastRealFieldId = id;
+  try {
+    localStorage.setItem(LAST_REAL_FIELD_KEY, String(id));
+  } catch {
+    // storage unavailable, keep the in-memory value
+  }
+};
 let messageTimeout: number | null = null;
 let messageColorAddr: number = 0;
 let functionCallerAddr: number = 0;
@@ -188,6 +210,12 @@ export function useFF7(addresses: FF7Addresses) {
     );
   }, [connected, generalSettings?.doubleInputFix]);
 
+  useEffect(() => {
+    if (gameState.currentModule === GameModule.Field && gameState.fieldId > 64) {
+      rememberRealField(gameState.fieldId);
+    }
+  }, [gameState.currentModule, gameState.fieldId]);
+
   type FnCall = { address: number; params?: number[] };
 
   const callGameFns = async (fns: FnCall[]) => {
@@ -213,6 +241,201 @@ export function useFF7(addresses: FF7Addresses) {
   const callGameFn = async (address: number, params?: number[]) => {
     await callGameFns([{ address, params }]);
     // return await readMemory(fnCallerResultAddr, DataType.Int);
+  };
+
+  // ── World-map savestate helpers ────────────────────────────────────────────
+  // Addresses come from the PC decomp of ff7.exe; the world-map data/code
+  // addresses there match the ones in ff7-lib/addresses.rs.
+  const WORLD_FN_SAVE_STATE_TO_SAVEMAP = 0x00766ecb; // World_SaveStateToSavemap
+  const WORLD_CAMERA_ROTATION_Y = 0x00dfc474; // g_WorldCameraRotationY
+  const WORLD_CAMERA_FRONT = 0x00dfc484; // g_WorldCameraFront
+  const WORLD_MAP_INITIALIZED = 0x00de69e0; // g_WorldMapInitialized
+  const SAVEMAP_WORLD_CAMERA_STATE = 0xf9c; // gSavemap.worldCameraState (u16)
+  const WORLD_ACTOR_SIZE = 0xc0;
+  const WORLD_ACTOR_COUNT = 16;
+
+  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+  // callGameFns() only queues the call; the game runs it at its next frame
+  // flip and the one-shot trampoline then overwrites the stub with `pop ebp; ret`
+  // (0x5D 0xC3). Wait for that so we know the call has really happened.
+  const waitForGameFnCall = async (timeoutMs = 600) => {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if ((await readMemory(functionCallerAddr, DataType.Byte)) === 0x5d) return true;
+      await sleep(20);
+    }
+    return false;
+  };
+
+  // The game only copies the live world state into the savemap when the world
+  // map is left or the menu opens (World_SaveStateToSavemap). Anything saved in
+  // between (player model/vehicle, map variant, camera, terrain currents, the
+  // six vehicle slots, the checksum) is stale, so ask the game to refresh it.
+  // That function also snaps the camera to the front in camera mode 0, so the
+  // live camera is put back afterwards and the real yaw is kept in the
+  // returned value.
+  const syncWorldSavemap = async () => {
+    if (!functionCallerAddr) return { ran: false, rotationY: 0 };
+    const rotationY = await readMemory(WORLD_CAMERA_ROTATION_Y, DataType.Int);
+    const front = await readMemory(WORLD_CAMERA_FRONT, DataType.Int);
+    await callGameFn(WORLD_FN_SAVE_STATE_TO_SAVEMAP);
+    const ran = await waitForGameFnCall();
+    if (!ran) {
+      // Never leave the call queued: it would run at some later frame, possibly
+      // in another module, and corrupt the savemap. Put the empty stub back.
+      await writeMemory(functionCallerAddr, [0x5d, 0xc3], DataType.Buffer);
+    }
+    await writeMemory(WORLD_CAMERA_ROTATION_Y, rotationY, DataType.Int);
+    await writeMemory(WORLD_CAMERA_FRONT, front, DataType.Int);
+    return { ran, rotationY };
+  };
+
+  type LiveWorldModel = { index: number; model_id: number; x: number; y: number; z: number; direction: number };
+
+  // Fresh read of the 16 world actor records (never the React snapshot, which
+  // goes stale across a world re-init). A record is live when its render
+  // object (+0xB8) is set, the same test ff7-lib uses.
+  const readLiveWorldModels = async (): Promise<LiveWorldModel[]> => {
+    const raw = await readMemoryBuffer(addresses.world_models, WORLD_ACTOR_SIZE * WORLD_ACTOR_COUNT);
+    const view = new DataView(new Uint8Array(raw).buffer);
+    const models: LiveWorldModel[] = [];
+    for (let i = 0; i < WORLD_ACTOR_COUNT; i++) {
+      const o = i * WORLD_ACTOR_SIZE;
+      if (view.getUint32(o + 0xb8, true) === 0) continue;
+      models.push({
+        index: i,
+        model_id: view.getUint8(o + 0x50),
+        x: view.getUint32(o + 0x0c, true),
+        y: view.getInt32(o + 0x10, true),
+        z: view.getUint32(o + 0x14, true),
+        direction: view.getInt16(o + 0x40, true),
+      });
+    }
+    return models;
+  };
+
+  // Place a world actor the way the game's own WorldEntity_RestoreFromVehicleSlot
+  // does: pos AND altPos (the previous position the game reverts to and packs
+  // into the vehicle slots) get the position, and facing, heading and direction
+  // all get the direction. `direction` is a 16-bit field: it must be written as
+  // a short, a 32-bit write also clobbers groundY at +0x42.
+  const placeWorldActor = async (
+    base: number,
+    p: { x: number; y: number; z: number; direction: number }
+  ) => {
+    const vec = new DataView(new ArrayBuffer(12));
+    vec.setInt32(0, p.x | 0, true);
+    vec.setInt32(4, p.y | 0, true);
+    vec.setInt32(8, p.z | 0, true);
+    const bytes = Array.from(new Uint8Array(vec.buffer));
+    const direction = p.direction & 0xffff;
+    await writeMemory(base + 0x0c, bytes, DataType.Buffer); // pos
+    await writeMemory(base + 0x1c, bytes, DataType.Buffer); // altPos
+    await writeMemory(base + 0x3c, direction, DataType.Short); // heading
+    await writeMemory(base + 0x3e, 0, DataType.Short); // headingOffset
+    await writeMemory(base + 0x40, direction, DataType.Short); // direction
+    await writeMemory(base + 0x4c, direction, DataType.Short); // facing
+  };
+
+  // The world map is fully loaded once g_WorldMapInitialized is set (it is
+  // cleared whenever the map is left). Before that the player pointer is
+  // null or stale and the init code would overwrite anything we write.
+  const waitForWorldReady = async (timeoutMs = 8000) => {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const mod = await readMemory(addresses.current_module, DataType.Byte);
+      if (
+        mod === GameModule.World &&
+        (await readMemory(WORLD_MAP_INITIALIZED, DataType.Int)) !== 0 &&
+        (await readMemory(addresses.world_current_obj_ptr, DataType.Int)) !== 0
+      ) {
+        return true;
+      }
+      await sleep(50);
+    }
+    return false;
+  };
+
+  // Undo a "leave the world map" request that did not go through. Order matters:
+  // back to normal play (state 1) first, then drop the request flag. In fade-out
+  // state 2 with no request the game opens the menu.
+  const cancelWorldLeave = async () => {
+    if ((await readMemory(addresses.current_module, DataType.Byte)) === GameModule.World) {
+      await writeMemory(addresses.world_mode, 1, DataType.Byte);
+    }
+    await writeMemory(addresses.world_mode + 0xC, 0, DataType.Byte);
+  };
+
+  type StepValues = {
+    stepId: number;
+    stepFraction: number;
+    stepOffset: number;
+    formationIndex: number;
+    dangerValue: number;
+  };
+
+  // Step ID, fraction, offset, formation index and danger value. Same memory
+  // and data types as the field state / step lock code uses.
+  const readStepValues = async (): Promise<StepValues> => ({
+    stepId: await readMemory(addresses.step_id, DataType.Int),
+    stepFraction: await readMemory(addresses.step_fraction, DataType.Int),
+    stepOffset: await readMemory(addresses.step_offset, DataType.Byte),
+    formationIndex: await readMemory(addresses.formation_idx, DataType.Byte),
+    dangerValue: await readMemory(addresses.danger_value, DataType.Short),
+  });
+
+  const writeStepValues = async (v: StepValues) => {
+    await writeMemory(addresses.step_id, v.stepId, DataType.Int);
+    await writeMemory(addresses.step_fraction, v.stepFraction, DataType.Int);
+    await writeMemory(addresses.step_offset, v.stepOffset, DataType.Byte);
+    await writeMemory(addresses.formation_idx, v.formationIndex, DataType.Byte);
+    await writeMemory(addresses.danger_value, v.dangerValue, DataType.Short);
+  };
+
+  // Snapshot of everything a world state needs.
+  const captureWorldState = async () => {
+    const { ran, rotationY } = await syncWorldSavemap();
+    if (!ran) {
+      console.warn("saveWorldState: the game did not run World_SaveStateToSavemap, the world part of the savemap may be stale");
+    }
+    const savemap = Array.from((await readMemoryBuffer(addresses.savemap, 0x10f4)) as ArrayLike<number>);
+    if (ran) {
+      // Keep the real camera yaw (the game's save function resets it in camera mode 0).
+      const camera = savemap[SAVEMAP_WORLD_CAMERA_STATE] | (savemap[SAVEMAP_WORLD_CAMERA_STATE + 1] << 8);
+      const patched = (camera & 0xf000) | (rotationY & 0x0fff);
+      savemap[SAVEMAP_WORLD_CAMERA_STATE] = patched & 0xff;
+      savemap[SAVEMAP_WORLD_CAMERA_STATE + 1] = (patched >> 8) & 0xff;
+    }
+
+    const playerPtr = await readMemory(addresses.world_current_obj_ptr, DataType.Int);
+    let worldX = 0, worldY = 0, worldZ = 0, worldDirection = 0;
+    if (playerPtr) {
+      worldX = await readMemory(playerPtr + 0x0c, DataType.Int);
+      worldY = await readMemory(playerPtr + 0x10, DataType.SignedInt);
+      worldZ = await readMemory(playerPtr + 0x14, DataType.Int);
+      worldDirection = await readMemory(playerPtr + 0x40, DataType.SignedShort);
+    }
+
+    const modelCoords = (await readLiveWorldModels()).map((m) => ({
+      model_id: m.model_id,
+      x: m.x,
+      y: m.y,
+      z: m.z,
+      direction: m.direction,
+    }));
+
+    return {
+      savemap,
+      worldX,
+      worldY,
+      worldZ,
+      worldDirection,
+      worldMapType: gameState.worldMapType,
+      modelCoords,
+      bounceFieldId: lastRealFieldId,
+      stepValues: await readStepValues(),
+    };
   };
 
   const getFieldObjPtr = async () => {
@@ -1137,10 +1360,20 @@ export function useFF7(addresses: FF7Addresses) {
       const state = stateId !== undefined ? saveStates.getFieldStateById(stateId) : saveStates.getLatestFieldState();
       if (!state) return;
 
+      // Field states can only be loaded from the field or the world map. In any
+      // other module (menu, battle, ...) the warp cannot happen and writing the
+      // savemap and field memory would corrupt the running game. Use a fresh
+      // read, not the React snapshot.
+      const liveModule = await readMemory(addresses.current_module, DataType.Byte);
+      if (liveModule !== GameModule.Field && liveModule !== GameModule.World) {
+        console.warn("loadFieldState: not in the field or on the world map, load skipped", liveModule);
+        return;
+      }
+
       // Restore the savemap
       await writeMemory(addresses.savemap, state.savemap, DataType.Buffer);
 
-      if (state.fieldId !== gameState.fieldId || gameState.currentModule === GameModule.World) {
+      if (state.fieldId !== gameState.fieldId || liveModule === GameModule.World) {
         console.debug("Field ID mismatch - warping to new field", state.fieldId, state.destination);
         await this.warpToFieldId(state.fieldId, state.destination);
 
@@ -1155,6 +1388,17 @@ export function useFF7(addresses: FF7Addresses) {
           }
           return fieldId === state.fieldId;
         });
+        // Only carry on if the warp really completed. Otherwise the field memory
+        // below would be written into a game that is still on the world map
+        // (or in a menu).
+        const arrived =
+          (await readMemory(addresses.current_module, DataType.Byte)) === GameModule.Field &&
+          (await readMemory(addresses.field_id, DataType.Short)) === state.fieldId;
+        if (!arrived) {
+          console.warn("loadFieldState: the warp did not complete, load cancelled");
+          if (liveModule === GameModule.World) await cancelWorldLeave();
+          return;
+        }
         console.debug("Field id matched");
       }
 
@@ -1216,135 +1460,12 @@ export function useFF7(addresses: FF7Addresses) {
       await writeMemory(0xddaf98, state.entitiesData, DataType.Buffer);
     },
     async saveWorldState(title?: string, category?: string) {
-      const memory = await readMemoryBuffer(addresses.savemap, 0x10F4);
-      const currentObjPtr = await readMemory(addresses.world_current_obj_ptr, DataType.Int);
-      const worldX = await readMemory(currentObjPtr + 0x0C, DataType.Int);
-      const worldY = await readMemory(currentObjPtr + 0x10, DataType.Int);
-      const worldZ = await readMemory(currentObjPtr + 0x14, DataType.Int);
-      const worldDirection = await readMemory(currentObjPtr + 0x40, DataType.Int);
-
-      // Save coords keyed by model_id so they can be restored to the correct
-      // slot even when a different world script is active (different model counts/order).
-      const modelCoords = gameState.worldModels.map(m => ({
-        model_id: m.model_id,
-        x: m.x,
-        y: m.y,
-        z: m.z,
-        direction: m.direction,
-      }));
-
-      // Update the packed position slots (savemap+0xF5C, D_00DC0C94) with the
-      // current live model positions before saving.  The game only writes these
-      // slots via C_007660DB when the player *leaves* the world map, so for saves
-      // taken while on the world map the savemap copy is stale.  Packing correct
-      // values here means C_00759A65 will restore models to the right positions
-      // when this state is loaded, regardless of how the load is timed.
-      //
-      // Bit layout per t_wm_local_8_rrr (ff7_worldmap_save_load.docx §6):
-      //   f_00  bits[18:0]  = X (19-bit)
-      //         bits[23:19] = f_50_model (5-bit game model-type id)
-      //         bits[31:24] = heading >> 4 (upper 8 bits of 12-bit heading)
-      //   f_04  bits[17:0]  = Z (18-bit)
-      //         bits[31:18] = Y (14-bit signed)
-      const modelTypeToSlot: Record<number, number> = {
-        0: 0, 1: 0, 2: 0,   // Cloud / Tifa / Cid on foot  → slot 0
-        4: 1,                 // Chocobo                     → slot 1
-        5: 2, 19: 2,          // Tiny Bronco / Gold Chocobo  → slot 2
-        3: 3, 6: 3,           // Highwind / Buggy            → slot 3
-        13: 4,                // Submarine                   → slot 4
-        10: 5, 11: 5, 29: 5,  // Misc                        → slot 5
-      };
-      const mutableMemory = Array.from(memory as ArrayLike<number>);
-      const PACKED_BASE = 0xF5C;
-      for (const m of gameState.worldModels) {
-        const slot = modelTypeToSlot[m.model_id];
-        if (slot === undefined || slot >= 6) continue;
-        const f_00 = (m.x & 0x7FFFF) |
-                     ((m.model_id & 0x1F) << 19) |
-                     (((m.direction >>> 4) & 0xFF) << 24);
-        const f_04 = (m.z & 0x3FFFF) | ((m.y & 0x3FFF) << 18);
-        const f_00u = f_00 >>> 0;
-        const f_04u = f_04 >>> 0;
-        const off = PACKED_BASE + slot * 8;
-        mutableMemory[off]     =  f_00u         & 0xFF;
-        mutableMemory[off + 1] = (f_00u >>> 8)  & 0xFF;
-        mutableMemory[off + 2] = (f_00u >>> 16) & 0xFF;
-        mutableMemory[off + 3] = (f_00u >>> 24) & 0xFF;
-        mutableMemory[off + 4] =  f_04u         & 0xFF;
-        mutableMemory[off + 5] = (f_04u >>> 8)  & 0xFF;
-        mutableMemory[off + 6] = (f_04u >>> 16) & 0xFF;
-        mutableMemory[off + 7] = (f_04u >>> 24) & 0xFF;
-      }
-
-      saveStates.pushWorldState({
-        savemap: mutableMemory,
-        worldX,
-        worldY,
-        worldZ,
-        worldDirection,
-        worldMapType: gameState.worldMapType,
-        modelCoords,
-        title,
-        category,
-      });
+      const captured = await captureWorldState();
+      saveStates.pushWorldState({ ...captured, title, category });
     },
     async overwriteWorldState(stateId: string) {
-      const memory = await readMemoryBuffer(addresses.savemap, 0x10F4);
-      const currentObjPtr = await readMemory(addresses.world_current_obj_ptr, DataType.Int);
-      const worldX = await readMemory(currentObjPtr + 0x0C, DataType.Int);
-      const worldY = await readMemory(currentObjPtr + 0x10, DataType.Int);
-      const worldZ = await readMemory(currentObjPtr + 0x14, DataType.Int);
-      const worldDirection = await readMemory(currentObjPtr + 0x40, DataType.Int);
-
-      const modelCoords = gameState.worldModels.map(m => ({
-        model_id: m.model_id,
-        x: m.x,
-        y: m.y,
-        z: m.z,
-        direction: m.direction,
-      }));
-
-      // See saveWorldState for the rationale behind packing live model
-      // positions into the savemap before saving.
-      const modelTypeToSlot: Record<number, number> = {
-        0: 0, 1: 0, 2: 0,   // Cloud / Tifa / Cid on foot  → slot 0
-        4: 1,                 // Chocobo                     → slot 1
-        5: 2, 19: 2,          // Tiny Bronco / Gold Chocobo  → slot 2
-        3: 3, 6: 3,           // Highwind / Buggy            → slot 3
-        13: 4,                // Submarine                   → slot 4
-        10: 5, 11: 5, 29: 5,  // Misc                        → slot 5
-      };
-      const mutableMemory = Array.from(memory as ArrayLike<number>);
-      const PACKED_BASE = 0xF5C;
-      for (const m of gameState.worldModels) {
-        const slot = modelTypeToSlot[m.model_id];
-        if (slot === undefined || slot >= 6) continue;
-        const f_00 = (m.x & 0x7FFFF) |
-                     ((m.model_id & 0x1F) << 19) |
-                     (((m.direction >>> 4) & 0xFF) << 24);
-        const f_04 = (m.z & 0x3FFFF) | ((m.y & 0x3FFF) << 18);
-        const f_00u = f_00 >>> 0;
-        const f_04u = f_04 >>> 0;
-        const off = PACKED_BASE + slot * 8;
-        mutableMemory[off]     =  f_00u         & 0xFF;
-        mutableMemory[off + 1] = (f_00u >>> 8)  & 0xFF;
-        mutableMemory[off + 2] = (f_00u >>> 16) & 0xFF;
-        mutableMemory[off + 3] = (f_00u >>> 24) & 0xFF;
-        mutableMemory[off + 4] =  f_04u         & 0xFF;
-        mutableMemory[off + 5] = (f_04u >>> 8)  & 0xFF;
-        mutableMemory[off + 6] = (f_04u >>> 16) & 0xFF;
-        mutableMemory[off + 7] = (f_04u >>> 24) & 0xFF;
-      }
-
-      saveStates.overwriteWorldState(stateId, {
-        savemap: mutableMemory,
-        worldX,
-        worldY,
-        worldZ,
-        worldDirection,
-        worldMapType: gameState.worldMapType,
-        modelCoords,
-      });
+      const captured = await captureWorldState();
+      saveStates.overwriteWorldState(stateId, captured);
     },
     async loadWorldState(stateId?: string) {
       const state = stateId !== undefined
@@ -1352,136 +1473,103 @@ export function useFF7(addresses: FF7Addresses) {
         : saveStates.getLatestWorldState();
       if (!state) return;
 
-      // Helper: write the new savemap to memory.
-      // state.savemap already has correctly packed position slots at +0xF5C
-      // (written by saveWorldState). Do NOT add extra partial writes here —
-      // they corrupt the model-ID and heading bits packed into the same bytes.
+      // The savemap in the state was refreshed by the game itself when it was
+      // captured (see captureWorldState), including the six packed vehicle
+      // slots at +0xF5C. Write it back unmodified.
       const writeNewSavemap = async () => {
         await writeMemory(addresses.savemap, state.savemap, DataType.Buffer);
       };
 
+      // Put every model back at its exact saved position. Always matches against
+      // a fresh read of the live actor records, never the React snapshot.
       const restoreModels = async () => {
-        if (!state.modelCoords) return;
-        // If coords were saved with model_id, match by model_id to the current live
-        // world model slots. Different world scripts put different models at different
-        // slot indices, so a raw index write would corrupt positions across scripts.
-        const hasModeIds = state.modelCoords.length > 0 && state.modelCoords[0].model_id !== undefined;
-        if (hasModeIds) {
-          // Build a map from model_id -> current slot index using the live world models
-          const currentSlotByModelId = new Map<number, number>();
-          for (const liveModel of gameState.worldModels) {
-            currentSlotByModelId.set(liveModel.model_id, liveModel.index);
-          }
-          // Write coords for models present in the saved state
+        if (!state.modelCoords || state.modelCoords.length === 0) return;
+        const live = await readLiveWorldModels();
+        const hasModelIds = state.modelCoords[0].model_id !== undefined;
+        if (hasModelIds) {
+          // Different world scripts put different models in different slots, so
+          // match by model id, not by index.
+          const slotByModelId = new Map<number, number>();
+          for (const liveModel of live) slotByModelId.set(liveModel.model_id, liveModel.index);
           for (const m of state.modelCoords) {
             if (m.model_id === undefined) continue;
-            const slotIndex = currentSlotByModelId.get(m.model_id);
+            const slotIndex = slotByModelId.get(m.model_id);
             if (slotIndex === undefined) continue;
-            const base = addresses.world_models + slotIndex * 192;
-            await writeMemory(base + 0x0C, m.x, DataType.Int);
-            await writeMemory(base + 0x10, m.y, DataType.Int);
-            await writeMemory(base + 0x14, m.z, DataType.Int);
-            await writeMemory(base + 0x40, m.direction, DataType.Int);
+            await placeWorldActor(addresses.world_models + slotIndex * WORLD_ACTOR_SIZE, m);
           }
         } else {
-          // Legacy: old saves without model_id — fall back to raw index restore
-          for (let i = 0; i < state.modelCoords.length; i++) {
-            const base = addresses.world_models + i * 192;
-            const m = state.modelCoords[i];
-            await writeMemory(base + 0x0C, m.x, DataType.Int);
-            await writeMemory(base + 0x10, m.y, DataType.Int);
-            await writeMemory(base + 0x14, m.z, DataType.Int);
-            await writeMemory(base + 0x40, m.direction, DataType.Int);
+          // Legacy states saved without model ids: raw index restore.
+          for (let i = 0; i < state.modelCoords.length && i < WORLD_ACTOR_COUNT; i++) {
+            await placeWorldActor(addresses.world_models + i * WORLD_ACTOR_SIZE, state.modelCoords[i]);
           }
         }
       };
 
-      // Map FF7 character ID to C_00759A65 parameter (Cloud=0, Tifa=1, Cid=2)
-      const characterModelIndex: Record<number, number> = { 0: 0, 2: 1, 8: 2 };
-      const reloadCharacterModel = async () => {
-        // Read from the savemap mirror of party_member_ids (0x7B5 offset).
-        // writeNewSavemap() must have been called before this so the mirror
-        // reflects the new leader.
-        const leaderId = await readMemory(addresses.party_member_ids + 0x7B5, DataType.Byte);
-        const partyMirror = await readMemoryBuffer(addresses.party_member_ids + 0x7B5, 3);
-        await writeMemory(addresses.party_member_ids, partyMirror, DataType.Buffer);
-        const modelParam = characterModelIndex[leaderId];
-        if (modelParam !== undefined) {
-          await callGameFn(0x00759A65, [modelParam]);
+      const restorePlayer = async () => {
+        const playerPtr = await readMemory(addresses.world_current_obj_ptr, DataType.Int);
+        if (!playerPtr) {
+          console.warn("loadWorldState: no player actor, skipping position restore");
+          return;
         }
+        await placeWorldActor(playerPtr, {
+          x: state.worldX,
+          y: state.worldY,
+          z: state.worldZ,
+          // Older states stored a 32-bit read here (direction in the low half,
+          // groundY in the high half): keep only the signed 16-bit direction.
+          direction: (state.worldDirection << 16) >> 16,
+        });
+      };
+
+      // The step values are restored last: the field the bounce goes through and
+      // the world map load can both reset them. States saved before step values
+      // were captured simply skip this.
+      const restoreStepValues = async () => {
+        if (state.stepValues) await writeStepValues(state.stepValues);
+      };
+      const finishRestore = async () => {
+        await restorePlayer();
+        await restoreStepValues();
       };
 
       if (gameState.currentModule === GameModule.World) {
         try {
-          // Determine whether the set of vehicle/character models in the saved
-          // state matches the set that is currently live on the world map.
-          // World models are spawned by the world script during map initialisation
-          // and cannot be added or removed in-place — if the sets differ we must
-          // force a full world reinit via a field bounce.
-          const currentModelIds = new Set(gameState.worldModels.map(m => m.model_id));
-          const savedModelIds = new Set(
-            (state.modelCoords || [])
-              .map(m => m.model_id)
-              .filter((id): id is number => id !== undefined)
-          );
-          const modelSetsDiffer =
-            [...currentModelIds].some(id => !savedModelIds.has(id)) ||
-            [...savedModelIds].some(id => !currentModelIds.has(id));
-
-          // Determine the field to bounce through.
+          // The world map can only rebuild its actors (which vehicles exist,
+          // who is the player and what they ride, the map variant) during its
+          // own load, so always force a full reload by bouncing through a real
+          // field. An in-place restore can only move actors that already exist.
           //
-          // addresses.field_id CANNOT be used: when the world map is running it
-          // holds the wm* entry trigger ID (1 = main world map, 2 = Icicle,
-          // 3 = Crater, 4 = Underwater) — not the last real field visited.
-          // wm* IDs (1-64) are not valid field-module targets and would either
-          // crash or soft-lock if used as a bounce destination.
-          //
-          // Instead, use the most recently saved FIELD state's fieldId.
-          // Field states are always captured from a running field module so
-          // their fieldId is guaranteed to be a real, loadable field (> 64).
-          // We only need the ID — destination coords are irrelevant because we
-          // warp straight out again as soon as the field module starts.
-          const bounceFieldState = saveStates.fieldStates
-            .slice()
-            .reverse()
-            .find(s => s.fieldId > 64);
-          const bounceFieldId = bounceFieldState?.fieldId;
+          // Field to bounce through: addresses.field_id CANNOT be used, while the
+          // world map runs it holds the wm* entry id (1-64), not a loadable
+          // field. Use the last real field the player was in (tracked, and also
+          // stored with the state), falling back to a saved field state. Only the
+          // id matters, we warp straight out again.
+          const bounceFieldId =
+            lastRealFieldId ??
+            (state.bounceFieldId && state.bounceFieldId > 64 ? state.bounceFieldId : undefined) ??
+            saveStates.fieldStates
+              .slice()
+              .reverse()
+              .find(s => s.fieldId > 64)?.fieldId;
 
-          if (modelSetsDiffer && bounceFieldId !== undefined) {
-            // ── Bounce path: world → real field → world ───────────────────────
+          if (bounceFieldId !== undefined) {
+            // ── world → real field → world ────────────────────────────────
+            // The savemap must NOT be written before the world is left: on
+            // exit the game packs the live actors into savemap+0xF5C
+            // (World_SaveStateToSavemap) and would overwrite our slots.
             //
-            // Critical ordering: the savemap must NOT be written before the
-            // world exits. When world_mode = 2 is set, C_0076609E runs
-            // automatically on exit and calls C_007660DB for every live world
-            // object, which packs their current positions back into
-            // savemap+0xF5C. If we had already written the new savemap there,
-            // C_007660DB would overwrite our target positions with the current
-            // (wrong) ones. Instead:
-            //
-            //   Step 1 — exit world using OLD savemap (C_007660DB runs cleanly,
-            //             the bounce field's scripts see a consistent savemap)
-            //   Step 2 — while in the field, write the NEW savemap
-            //             (C_0076616A will read it during the upcoming reinit)
-            //   Step 3 — re-enter world; C_0076616A spawns correct models
-            //             at the correct packed positions
-            //
-            // We inline both warp triggers rather than calling warpToFieldId()
-            // because gameState.currentModule is a stale React closure — it
-            // reads GameModule.World even after the game has transitioned to the
-            // field, causing warpToFieldId to write world-mode registers into a
-            // running field module and crash.
-
-            // ── Step 1: world → bounce field (old savemap) ───────────────────
-            // Write fade=33 (the maximum, meaning instant black) synchronously
-            // before triggering the world exit so there is no visible world-map
-            // frame after the user loads the state.
+            // Step 1: leave the world with the OLD savemap. Fade=33 first so no
+            // world frame shows after the load.
             await writeMemory(addresses.field_global_obj + 0x4e, 33, DataType.Byte);
             await writeMemory(addresses.field_global_obj + 2, bounceFieldId, DataType.Short);
             await writeMemory(addresses.world_battle_flag3, 0, DataType.Byte);
-            await writeMemory(addresses.world_mode, 2, DataType.Byte);
+            // World map state 2 means "fade out", and once the fade is idle the
+            // game opens the MENU unless the "leave to a field" request
+            // (world_mode + 0xC) is already set. So set the request BEFORE
+            // switching to state 2; the other order opens the menu whenever a
+            // frame runs between the two writes.
             await writeMemory(addresses.world_mode + 0xC, 1, DataType.Byte);
-            // Sound reset intentionally omitted for the bounce — it adds 100 ms
-            // of visible delay and the world re-entry will reset audio anyway.
+            await writeMemory(addresses.world_mode, 2, DataType.Byte);
 
             const t1 = Date.now();
             await waitFor(async () => {
@@ -1491,18 +1579,24 @@ export function useFF7(addresses: FF7Addresses) {
               return mod === GameModule.Field && fid === bounceFieldId;
             });
 
-            // ── Step 2: write new savemap while safely in the field ───────────
+            // Only continue if we really are in the bounce field. Writing the new
+            // savemap into a world map (or menu) that is still running would
+            // corrupt it, so back out and leave the game as it was.
+            const inBounceField =
+              (await readMemory(addresses.current_module, DataType.Byte)) === GameModule.Field &&
+              (await readMemory(addresses.field_id, DataType.Short)) === bounceFieldId;
+            if (!inBounceField) {
+              console.warn("loadWorldState: the world map did not leave to the bounce field, load cancelled");
+              await cancelWorldLeave();
+              return;
+            }
+
+            // Step 2: safely in the field, write the NEW savemap.
             await writeNewSavemap();
 
-            // ── Step 3: field → world (new savemap) ──────────────────────────
-            // Mirror warpToFieldId's field→world pattern exactly — this is
-            // what works in the field→world path of loadWorldState.
-            // Do NOT write fade_type here: fade_type is in modules_global_object
-            // which persists across module transitions. Writing fade_type=4
-            // carries into the world module and blocks its entry script,
-            // leaving Cloud at default wm0 coords. Use 0x4e (fade-out speed
-            // trigger for the currently-running module) via setTimeout instead,
-            // exactly as warpToFieldId does.
+            // Step 3: field → world, same pattern as warpToFieldId. Do NOT
+            // write fade_type here, it persists across modules and blocks the
+            // world entry script.
             const worldEntryId = state.worldMapType + 1;
             await writeMemory(addresses.field_global_obj + 2, worldEntryId, DataType.Short);
             await writeMemory(addresses.field_global_obj + 1, 1, DataType.Byte);
@@ -1510,50 +1604,21 @@ export function useFF7(addresses: FF7Addresses) {
               await writeMemory(addresses.field_global_obj + 0x4e, 33, DataType.Byte);
             }, 75);
 
-            // Wait for world module — same as the working field→world path.
-            const t2 = Date.now();
-            await waitFor(async () => {
-              if (Date.now() - t2 > 10000) return true;
-              return (await readMemory(addresses.current_module, DataType.Byte)) === GameModule.World;
-            });
-
-            // Wait 150ms after world module starts — same as working path.
-            await new Promise(resolve => setTimeout(resolve, 150));
-
-            // Write coords via world_current_obj_ptr — same as working path.
-            const currentObjPtr = await readMemory(addresses.world_current_obj_ptr, DataType.Int);
-            if (currentObjPtr) {
-              await writeMemory(currentObjPtr + 0x0C, state.worldX, DataType.Int);
-              await writeMemory(currentObjPtr + 0x10, state.worldY, DataType.Int);
-              await writeMemory(currentObjPtr + 0x14, state.worldZ, DataType.Int);
-              await writeMemory(currentObjPtr + 0x40, state.worldDirection, DataType.Int);
-            }
-            // restoreModels() intentionally omitted — C_0076616A already
-            // placed every model from the packed savemap slots during reinit.
-            // The restoreModels closure holds a stale pre-bounce snapshot of
-            // gameState.worldModels and would write to wrong slot indices.
-
-          } else {
-            // ── In-place path: model sets match (or no field states to bounce through) ─
-            // Just write the new savemap and update all model positions directly.
-            // reloadCharacterModel / C_00759A65 is intentionally NOT called here:
-            // that function allocates a new world-model object and is only safe
-            // to call during world-map initialisation. Calling it in-place while
-            // the world map is already running spawns a second (invisible)
-            // character model on top of the existing one.
-            if (modelSetsDiffer) {
-              console.warn("loadWorldState: model sets differ but no valid bounce field available (no field states saved) — falling back to in-place restore");
-            }
-            await writeNewSavemap();
-            await new Promise(resolve => setTimeout(resolve, 100));
+            // Wait for the world to finish LOADING, not just for the module
+            // switch: before the load completes the player pointer is null or
+            // stale and the load itself would overwrite our writes.
+            await waitForWorldReady();
             await restoreModels();
-            const currentObjPtr = await readMemory(addresses.world_current_obj_ptr, DataType.Int);
-            if (currentObjPtr) {
-              await writeMemory(currentObjPtr + 0x0C, state.worldX, DataType.Int);
-              await writeMemory(currentObjPtr + 0x10, state.worldY, DataType.Int);
-              await writeMemory(currentObjPtr + 0x14, state.worldZ, DataType.Int);
-              await writeMemory(currentObjPtr + 0x40, state.worldDirection, DataType.Int);
-            }
+            await finishRestore();
+          } else {
+            // No real field known yet: best effort in place. This moves the models
+            // that exist but cannot rebuild the world. Visiting any field once
+            // (or loading a field state) makes world loads fully reliable.
+            console.warn("loadWorldState: no real field known to bounce through (visit any field once, or load a field state), restoring in place so models will not rebuild");
+            await writeNewSavemap();
+            await sleep(100);
+            await restoreModels();
+            await finishRestore();
           }
         } catch (e) {
           console.warn("loadWorldState: error restoring world state", e);
@@ -1563,26 +1628,18 @@ export function useFF7(addresses: FF7Addresses) {
           await writeNewSavemap();
           await this.warpToFieldId(state.worldMapType + 1);
 
-          const maxWait = 10000;
-          const startTime = Date.now();
+          const t = Date.now();
           await waitFor(async () => {
-            if (Date.now() - startTime > maxWait) return true;
-            const mod = await readMemory(addresses.current_module, DataType.Byte);
-            return mod === GameModule.World;
+            if (Date.now() - t > 10000) return true;
+            return (await readMemory(addresses.current_module, DataType.Byte)) === GameModule.World;
           });
 
-          await new Promise(resolve => setTimeout(resolve, 150));
-
-          const currentObjPtr = await readMemory(addresses.world_current_obj_ptr, DataType.Int);
-          if (!currentObjPtr) {
-            console.warn("loadWorldState: world_current_obj_ptr is null after warp, skipping coordinate restore");
+          if (!(await waitForWorldReady())) {
+            console.warn("loadWorldState: world map did not finish loading, skipping position restore");
             return;
           }
-          await writeMemory(currentObjPtr + 0x0C, state.worldX, DataType.Int);
-          await writeMemory(currentObjPtr + 0x10, state.worldY, DataType.Int);
-          await writeMemory(currentObjPtr + 0x14, state.worldZ, DataType.Int);
-          await writeMemory(currentObjPtr + 0x40, state.worldDirection, DataType.Int);
           await restoreModels();
+          await finishRestore();
         } catch (e) {
           console.warn("loadWorldState: error during field-to-world transition", e);
         }
@@ -1601,27 +1658,39 @@ export function useFF7(addresses: FF7Addresses) {
     async loadState(stateId?: string) {
       if (isLoadingStateRef.current) return;
       isLoadingStateRef.current = true;
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        if (stateId !== undefined) {
-          if (saveStates.getFieldStateById(stateId)) {
-            await this.loadFieldState(stateId);
-          } else if (saveStates.getWorldStateById(stateId)) {
-            await this.loadWorldState(stateId);
-          } else if (saveStates.getSnowboardStateById(stateId)) {
-            await this.loadSnowBoardState(stateId);
+        const load = async () => {
+          if (stateId !== undefined) {
+            if (saveStates.getFieldStateById(stateId)) {
+              await this.loadFieldState(stateId);
+            } else if (saveStates.getWorldStateById(stateId)) {
+              await this.loadWorldState(stateId);
+            } else if (saveStates.getSnowboardStateById(stateId)) {
+              await this.loadSnowBoardState(stateId);
+            }
+          } else {
+            if (gameState.currentModule === GameModule.World) {
+              await this.loadWorldState();
+            } else if (gameState.currentModule === GameModule.Field) {
+              await this.loadFieldState();
+            } else if (gameState.currentModule === GameModule.Snowboard2) {
+              await this.loadSnowBoardState();
+            }
           }
-        } else {
-          if (gameState.currentModule === GameModule.World) {
-            await this.loadWorldState();
-          } else if (gameState.currentModule === GameModule.Field) {
-            await this.loadFieldState();
-          } else if (gameState.currentModule === GameModule.Snowboard2) {
-            await this.loadSnowBoardState();
-          }
-        }
+        };
+        // A load that hangs (a wait that never finishes) must not keep the
+        // lock held, or saving and loading stay dead until Ultima is restarted.
+        await Promise.race([
+          load(),
+          new Promise<void>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("timed out after 60s")), 60000);
+          }),
+        ]);
       } catch (e) {
         console.error("loadState: unexpected error, state load aborted", e);
       } finally {
+        if (timer) clearTimeout(timer);
         isLoadingStateRef.current = false;
       }
     },
@@ -1641,8 +1710,10 @@ export function useFF7(addresses: FF7Addresses) {
         await writeMemory(addresses.field_global_obj + 1, 1, DataType.Byte);
       } else if (gameState.currentModule === GameModule.World) {
         await writeMemory(addresses.world_battle_flag3, 0, DataType.Byte);
-        await writeMemory(addresses.world_mode, 2, DataType.Byte);
+        // Set the "leave to a field" request before entering fade-out state 2,
+        // otherwise the game opens the menu when a frame runs in between.
         await writeMemory(addresses.world_mode + 0xC, 1, DataType.Byte);
+        await writeMemory(addresses.world_mode, 2, DataType.Byte);
       }
 
       // Fade out immediately
