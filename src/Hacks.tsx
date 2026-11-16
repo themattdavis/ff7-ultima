@@ -1,4 +1,4 @@
-import Row from "./components/Row";
+﻿import Row from "./components/Row";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./components/ui/select";
 import { Switch } from "./components/ui/switch";
 import { useAlert } from "./hooks/useAlert";
@@ -8,6 +8,17 @@ import { useEffect } from "react";
 import { useSettings } from "./useSettings";
 import { writeMemory, DataType } from "./memory";
 import { applyDoubleInputFix } from "./doubleInputFix";
+
+const SPEED_OPTIONS = [0.25, 0.5, 1, 2, 5, 10, 1000];
+
+// The speed read back from game memory can be slightly off the value that was
+// written (float rounding, e.g. 999.99 for 1000), so snap it to the nearest option.
+function snapSpeed(speed: string): string {
+  const value = parseFloat(speed);
+  if (!value) return "1";
+  const nearest = SPEED_OPTIONS.reduce((a, b) => Math.abs(b - value) < Math.abs(a - value) ? b : a);
+  return Math.abs(nearest - value) / nearest < 0.02 ? "" + nearest : speed;
+}
 
 export function Hacks(props: { ff7: FF7, tab: Tabs }) {
   const ff7 = props.ff7;
@@ -120,10 +131,10 @@ export function Hacks(props: { ff7: FF7, tab: Tabs }) {
     }
   }, [skipCPR, ff7.gameState.fieldId]);
 
-  return ( 
+  return (
     <>
       <Row label="Speed">
-        <Select value={ff7.gameState.speed || "1"} onValueChange={setSpeed}>
+        <Select value={snapSpeed(ff7.gameState.speed)} onValueChange={setSpeed}>
           <SelectTrigger>
             <SelectValue />
           </SelectTrigger>
@@ -132,23 +143,11 @@ export function Hacks(props: { ff7: FF7, tab: Tabs }) {
             <SelectItem value="0.5">Slow (1/2x)</SelectItem>
             <SelectItem value="1">Normal (1x)</SelectItem>
             <SelectItem value="2">Fast (2x)</SelectItem>
-            <SelectItem value="5">Fastest (5x)</SelectItem>
+            <SelectItem value="5">Faster (5x)</SelectItem>
+            <SelectItem value="10">Fastest (10x)</SelectItem>
+            <SelectItem value="1000">Max</SelectItem>
           </SelectContent>
         </Select>
-      </Row>
-
-      <Row label="Skip intros">
-        <Switch checked={ff7.introDisabled} onClick={toggleSkipIntros} />
-      </Row>
-
-      <div className={ff7.gameState.isFFnx ? "opacity-50" : ""} title={ff7.gameState.isFFnx ? "FFNx already has this feature" : ""}>
-        <Row label="Unfocus patch">
-          <Switch checked={ff7.gameState.unfocusPatchEnabled} onClick={toggleUnfocusPatch} />
-        </Row>
-      </div>
-      
-      <Row label="Swirl skip">
-        <Switch checked={ff7.gameState.battleSwirlDisabled} onClick={toggleSwirlSkip} />
       </Row>
 
       <Row label="Random battles">
@@ -164,13 +163,24 @@ export function Hacks(props: { ff7: FF7, tab: Tabs }) {
         </Select>
       </Row>
 
-      <Row label="Skip dialogues">
-        <Switch checked={ff7.gameState.fieldSkipDialoguesEnabled} onClick={toggleSkipDialogues} />
+      <Row label="Save anywhere">
+        <Switch checked={saveAnywhere} onClick={toggleSaveAnywhere} />
       </Row>
 
       <Row label="Auto-skip FMV">
         <Switch checked={generalSettings?.autoSkipFMV ?? false} onClick={toggleAutoSkipFMV} />
       </Row>
+
+      <Row label="Skip intros">
+        <Switch checked={ff7.introDisabled} onClick={toggleSkipIntros} />
+      </Row>
+
+      <Row label="Skip dialogues">
+        <Switch checked={ff7.gameState.fieldSkipDialoguesEnabled} onClick={toggleSkipDialogues} />
+      </Row>
+
+
+
 
       <Row label="No glacier freeze">
         <Switch checked={generalSettings?.disableGlacierTemp ?? false} onClick={toggleGlacierTemp} />
@@ -180,9 +190,7 @@ export function Hacks(props: { ff7: FF7, tab: Tabs }) {
         <Switch checked={generalSettings?.disableWhirlwindBattles ?? false} onClick={toggleWhirlwindBattles} />
       </Row>
 
-      <Row label="Save anywhere">
-        <Switch checked={saveAnywhere} onClick={toggleSaveAnywhere} />
-      </Row>
+
 
       <Row label="Double Input Fix">
         <Switch checked={generalSettings?.doubleInputFix ?? false} onClick={toggleDoubleInputFix} />
@@ -191,6 +199,20 @@ export function Hacks(props: { ff7: FF7, tab: Tabs }) {
       <Row label="Skip CPR">
         <Switch checked={skipCPR} onClick={toggleSkipCPR} />
       </Row>
+
+
+
+
+
+      <Row label="Swirl skip">
+        <Switch checked={ff7.gameState.battleSwirlDisabled} onClick={toggleSwirlSkip} />
+      </Row>
+
+      <div className={ff7.gameState.isFFnx ? "opacity-50" : ""} title={ff7.gameState.isFFnx ? "FFNx already has this feature" : ""}>
+        <Row label="Unfocus patch">
+          <Switch checked={ff7.gameState.unfocusPatchEnabled} onClick={toggleUnfocusPatch} />
+        </Row>
+      </div>
 
       <Row label="Enable shortcuts">
         <Switch checked={generalSettings?.enableShortcuts ?? true} onClick={toggleShortcuts} />

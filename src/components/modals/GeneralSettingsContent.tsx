@@ -1,11 +1,11 @@
-import { FF7 } from "@/useFF7";
+﻿import { FF7 } from "@/useFF7";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { useEffect, useState } from "react";
-import { AutoUpdateOption, useSettings } from "@/useSettings";
+import { AutoUpdateOption, HackSettings, useSettings } from "@/useSettings";
 
 interface GeneralSettingsContentProps {
   ff7: FF7;
@@ -43,7 +43,13 @@ export function GeneralSettingsContent({ ff7 }: GeneralSettingsContentProps) {
     manualSlots: true,
     skipDialogues: true,
     runByDefault: true,
-    autoSense: true
+    autoSense: true,
+    autoSkipFMV: true,
+    disableGlacierTemp: true,
+    disableWhirlwindBattles: true,
+    saveAnywhere: true,
+    doubleInputFix: true,
+    skipCPR: true
   });
 
   // Sync state when generalSettings changes
@@ -85,8 +91,37 @@ export function GeneralSettingsContent({ ff7 }: GeneralSettingsContentProps) {
         return ff7.gameState.fieldRunByDefaultEnabled;
       case 'autoSense':
         return ff7.gameState.autoSenseEnabled;
+      default:
+        return undefined;
     }
   };
+
+  const hackCheckboxes: { key: keyof typeof rememberedHacks; label: string }[] = [
+    { key: 'speed', label: 'Game Speed' },
+    { key: 'skipIntros', label: 'Skip Intros' },
+    { key: 'unfocusPatch', label: 'Unfocus Patch' },
+    { key: 'swirlSkip', label: 'Swirl Skip' },
+    { key: 'randomBattles', label: 'Random Battles' },
+    { key: 'skipDialogues', label: 'Skip Dialogues' },
+    { key: 'runByDefault', label: 'Run by Default' },
+    { key: 'autoSkipFMV', label: 'Auto-skip FMV' },
+    { key: 'disableGlacierTemp', label: 'No Glacier Freeze' },
+    { key: 'disableWhirlwindBattles', label: 'No Maze Wind Battles' },
+    { key: 'saveAnywhere', label: 'Save Anywhere' },
+    { key: 'doubleInputFix', label: 'Double Input Fix' },
+    { key: 'skipCPR', label: 'Skip CPR' },
+    { key: 'expMultiplier', label: 'EXP Multiplier' },
+    { key: 'gilMultiplier', label: 'Gil Multiplier' },
+    { key: 'apMultiplier', label: 'AP Multiplier' },
+    { key: 'invincibility', label: 'Invincibility' },
+    { key: 'instantATB', label: 'Instant ATB' },
+    { key: 'manualSlots', label: 'Manual Slots' },
+    { key: 'autoSense', label: 'Auto Sense' },
+  ];
+
+  const generalSettingsHacks: (keyof typeof rememberedHacks)[] = [
+    'autoSkipFMV', 'disableGlacierTemp', 'disableWhirlwindBattles', 'saveAnywhere', 'doubleInputFix', 'skipCPR'
+  ];
 
   const toggleHack = (hack: keyof typeof rememberedHacks) => {
     const newState = {
@@ -100,16 +135,24 @@ export function GeneralSettingsContent({ ff7 }: GeneralSettingsContentProps) {
       rememberedHacks: newState
     });
 
+    // Hacks stored in the general settings need no hack-settings bookkeeping
+    if (generalSettingsHacks.includes(hack)) {
+      setRememberedHacks(newState);
+      return;
+    }
+
     // Handle hack settings
+    const hackSetting = hack as keyof HackSettings;
+
     if (!newState[hack]) {
       // If we're disabling remembering, remove this hack from settings
-      const { [hack]: _, ...rest } = hackSettings || {};
+      const { [hackSetting]: _, ...rest } = hackSettings || {};
       updateHackSettings(rest);
     } else {
       // If we're enabling remembering, save the current state
       updateHackSettings({
         ...hackSettings,
-        [hack]: getCurrentHackState(hack)
+        [hackSetting]: getCurrentHackState(hack)
       });
     }
 
@@ -184,115 +227,17 @@ export function GeneralSettingsContent({ ff7 }: GeneralSettingsContentProps) {
       <div className="space-y-2">
         <Label>Remember Hacks</Label>
         <p className="text-xs text-slate-400 mb-2">The selected hacks will be remembered after you close the app and across game sessions</p>
-        <div className="grid grid-cols-2 gap-2">
-          <div className="space-y-2">
-            <div className="flex items-center space-x-2">
-              <Checkbox 
-                id="speed" 
-                checked={rememberedHacks.speed}
-                onCheckedChange={() => toggleHack('speed')}
+        <div className="grid grid-cols-2 gap-x-2 gap-y-2">
+          {hackCheckboxes.map(({ key, label }) => (
+            <div key={key} className="flex items-center space-x-2">
+              <Checkbox
+                id={key}
+                checked={rememberedHacks[key]}
+                onCheckedChange={() => toggleHack(key)}
               />
-              <label htmlFor="speed" className="text-sm">Game Speed</label>
+              <label htmlFor={key} className="text-sm">{label}</label>
             </div>
-            <div className="flex items-center space-x-2">
-              <Checkbox 
-                id="skipIntros" 
-                checked={rememberedHacks.skipIntros}
-                onCheckedChange={() => toggleHack('skipIntros')}
-              />
-              <label htmlFor="skipIntros" className="text-sm">Skip Intros</label>
-            </div>
-            <div className="flex items-center space-x-2">
-              <Checkbox 
-                id="unfocusPatch" 
-                checked={rememberedHacks.unfocusPatch}
-                onCheckedChange={() => toggleHack('unfocusPatch')}
-              />
-              <label htmlFor="unfocusPatch" className="text-sm">Unfocus Patch</label>
-            </div>
-            <div className="flex items-center space-x-2">
-              <Checkbox 
-                id="swirlSkip" 
-                checked={rememberedHacks.swirlSkip}
-                onCheckedChange={() => toggleHack('swirlSkip')}
-              />
-              <label htmlFor="swirlSkip" className="text-sm">Swirl Skip</label>
-            </div>
-            <div className="flex items-center space-x-2">
-              <Checkbox 
-                id="randomBattles" 
-                checked={rememberedHacks.randomBattles}
-                onCheckedChange={() => toggleHack('randomBattles')}
-              />
-              <label htmlFor="randomBattles" className="text-sm">Random Battles</label>
-            </div>
-            <div className="flex items-center space-x-2">
-              <Checkbox 
-                id="runByDefault" 
-                checked={rememberedHacks.runByDefault}
-                onCheckedChange={() => toggleHack('runByDefault')}
-              />
-              <label htmlFor="runByDefault" className="text-sm">Run by Default</label>
-            </div>
-          </div>
-          <div className="space-y-2">
-            <div className="flex items-center space-x-2">
-              <Checkbox 
-                id="expMultiplier" 
-                checked={rememberedHacks.expMultiplier}
-                onCheckedChange={() => toggleHack('expMultiplier')}
-              />
-              <label htmlFor="expMultiplier" className="text-sm">EXP Multiplier</label>
-            </div>
-            <div className="flex items-center space-x-2">
-              <Checkbox 
-                id="apMultiplier" 
-                checked={rememberedHacks.apMultiplier}
-                onCheckedChange={() => toggleHack('apMultiplier')}
-              />
-              <label htmlFor="apMultiplier" className="text-sm">AP Multiplier</label>
-            </div>
-            <div className="flex items-center space-x-2">
-              <Checkbox 
-                id="invincibility" 
-                checked={rememberedHacks.invincibility}
-                onCheckedChange={() => toggleHack('invincibility')}
-              />
-              <label htmlFor="invincibility" className="text-sm">Invincibility</label>
-            </div>
-            <div className="flex items-center space-x-2">
-              <Checkbox 
-                id="instantATB" 
-                checked={rememberedHacks.instantATB}
-                onCheckedChange={() => toggleHack('instantATB')}
-              />
-              <label htmlFor="instantATB" className="text-sm">Instant ATB</label>
-            </div>
-            <div className="flex items-center space-x-2">
-              <Checkbox 
-                id="manualSlots" 
-                checked={rememberedHacks.manualSlots}
-                onCheckedChange={() => toggleHack('manualSlots')}
-              />
-              <label htmlFor="manualSlots" className="text-sm">Manual Slots</label>
-            </div>
-            <div className="flex items-center space-x-2">
-              <Checkbox 
-                id="skipDialogues" 
-                checked={rememberedHacks.skipDialogues}
-                onCheckedChange={() => toggleHack('skipDialogues')}
-              />
-              <label htmlFor="skipDialogues" className="text-sm">Skip Dialogues</label>
-            </div>
-            <div className="flex items-center space-x-2">
-              <Checkbox 
-                id="autoSense" 
-                checked={rememberedHacks.autoSense}
-                onCheckedChange={() => toggleHack('autoSense')}
-              />
-              <label htmlFor="autoSense" className="text-sm">Auto Sense</label>
-            </div>
-          </div>
+          ))}
         </div>
       </div>
     </div>

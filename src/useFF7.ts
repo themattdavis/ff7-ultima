@@ -17,6 +17,10 @@ import { useBattleLog } from "./hooks/useBattleLog";
 import { encodeText } from "./ff7/fftext";
 import { applyDoubleInputFix } from "./doubleInputFix";
 
+// Field IDs where the "Auto-skip FMV" hack must leave the movie playing.
+// Manual skipping (skipFMV / shortcut) still works on these fields.
+const AUTO_SKIP_FMV_EXCLUDED_FIELDS: number[] = [384];
+
 const hex = (str: string) => str.split(" ").map((s) => parseInt(s, 16));
 let messageTimeout: number | null = null;
 let messageColorAddr: number = 0;
@@ -448,7 +452,7 @@ export function useFF7(addresses: FF7Addresses) {
   }
 
   // Auto-skip FMVs: poll movie_is_playing each cycle and call skipFMV if active
-  if ((generalSettings?.autoSkipFMV ?? false) && gameState.currentModule === GameModule.Field) {
+  if ((generalSettings?.autoSkipFMV ?? false) && gameState.currentModule === GameModule.Field && !AUTO_SKIP_FMV_EXCLUDED_FIELDS.includes(gameState.fieldId)) {
     setTimeout(async () => {
       const isMoviePlaying = await readMemory(addresses.movie_is_playing, DataType.Byte);
       if (isMoviePlaying) {

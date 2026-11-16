@@ -42,6 +42,12 @@ export interface GeneralSettings {
     skipDialogues: boolean;
     runByDefault: boolean;
     autoSense: boolean;
+    autoSkipFMV: boolean;
+    disableGlacierTemp: boolean;
+    disableWhirlwindBattles: boolean;
+    saveAnywhere: boolean;
+    doubleInputFix: boolean;
+    skipCPR: boolean;
   };
 }
 
@@ -175,6 +181,15 @@ export function useSettings() {
             ...general,
             rememberedHacks: { ...defaultGeneral.rememberedHacks, ...general.rememberedHacks },
           };
+          // These hacks live in the general settings, so "not remembered" means
+          // they start switched off again on every app launch.
+          const remembered = general.rememberedHacks;
+          if (!remembered.autoSkipFMV) general.autoSkipFMV = false;
+          if (!remembered.disableGlacierTemp) general.disableGlacierTemp = false;
+          if (!remembered.disableWhirlwindBattles) general.disableWhirlwindBattles = false;
+          if (!remembered.saveAnywhere) general.saveAnywhere = false;
+          if (!remembered.doubleInputFix) general.doubleInputFix = false;
+          if (!remembered.skipCPR) general.skipCPR = false;
         }
         setGeneralSettings(general);
 
@@ -352,6 +367,12 @@ function getDefaultGeneralSettings(): GeneralSettings {
       skipDialogues: true,
       runByDefault: true,
       autoSense: true,
+      autoSkipFMV: true,
+      disableGlacierTemp: true,
+      disableWhirlwindBattles: true,
+      saveAnywhere: true,
+      doubleInputFix: true,
+      skipCPR: true,
     },
   };
 }
