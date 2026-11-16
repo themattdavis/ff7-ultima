@@ -12,10 +12,19 @@ pub struct StoredTriangleSlot {
     pub chunk_z: u16,
 }
 
+/// A single vertex position from a chunk's vertex (or normal) list - 3x i16 + 2 bytes padding per
+/// the reference documentation's 8-byte record format. Padding is read but discarded.
+#[derive(Serialize, Clone, Copy, Default)]
+pub struct WorldChunkVertex {
+    pub x: i16,
+    pub y: i16,
+    pub z: i16,
+}
+
 /// One of the 32 fixed-size slots in the World Map's chunk-streaming table, 0x18 (24) bytes each.
 /// Reverse-engineered from live memory (not from any known PC decompilation) - see field comments
 /// for confidence level on each part.
-#[derive(Serialize, Clone, Copy, Default)]
+#[derive(Serialize, Clone, Default)]
 pub struct WorldChunkSlot {
     /// Confirmed via statistical analysis across all 31 non-empty slots observed: `vertex_data_end -
     /// vertex_data_start` was an exact multiple of 8 in every case, with no exceptions - so this
@@ -46,6 +55,12 @@ pub struct WorldChunkSlot {
     /// not chunk-specific data - it's the same value for a given slot index regardless of which
     /// chunk is currently loaded there.
     pub slot_buffer_base: u32,
+    /// The chunk's decoded vertex (or normal - see vertex_data_start's doc comment) list, one entry
+    /// per 8-byte record between vertex_data_start and vertex_data_end. Added specifically to
+    /// support a client-side persistent vertex cache (mirroring the PSX debug script's vlc_cache),
+    /// since this data needs to survive a chunk being evicted from these 32 live slots to be useful
+    /// for classifying stale stored-triangle references after the fact.
+    pub vertices: Vec<WorldChunkVertex>,
 }
 
 #[derive(Serialize)]

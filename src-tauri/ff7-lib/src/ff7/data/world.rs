@@ -1,23 +1,47 @@
 use crate::ff7::addresses::FF7Addresses;
-use crate::ff7::types::world::{WorldModel, WorldFieldTblItem, StoredTriangleSlot, WorldChunkSlot};
+use crate::ff7::types::world::{WorldModel, WorldFieldTblItem, StoredTriangleSlot, WorldChunkSlot, WorldChunkVertex};
 use crate::utils::memory::*;
 
 pub const WORLD_CHUNK_SLOT_COUNT: usize = 32;
 pub const WORLD_CHUNK_SLOT_STRIDE: u32 = 0x18;
+// Defensive cap on how many vertex records to read per slot - well above any observed count
+// (~80-220), just to bound worst-case work if a pointer/count is ever garbage.
+const WORLD_CHUNK_MAX_VERTICES: u32 = 256;
+
+fn read_world_chunk_vertices(start: u32, end: u32) -> Result<Vec<WorldChunkVertex>, String> {
+    if start == 0 || end <= start {
+        return Ok(Vec::new());
+    }
+    let count = ((end - start) / 8).min(WORLD_CHUNK_MAX_VERTICES);
+    let mut vertices = Vec::with_capacity(count as usize);
+    for i in 0..count {
+        let addr = start + i * 8;
+        vertices.push(WorldChunkVertex {
+            x: read_memory_signed_short(addr)?,
+            y: read_memory_signed_short(addr + 2)?,
+            z: read_memory_signed_short(addr + 4)?,
+        });
+    }
+    Ok(vertices)
+}
 
 pub fn read_world_chunk_slots(addresses: &FF7Addresses) -> Result<Vec<WorldChunkSlot>, String> {
     let mut slots = Vec::with_capacity(WORLD_CHUNK_SLOT_COUNT);
     for i in 0..WORLD_CHUNK_SLOT_COUNT {
         let base = addresses.world_chunk_headers + (i as u32) * WORLD_CHUNK_SLOT_STRIDE;
+        let vertex_data_start = read_memory_int(base)? as u32;
+        let vertex_data_end = read_memory_int(base + 0x4)? as u32;
+        let vertices = read_world_chunk_vertices(vertex_data_start, vertex_data_end)?;
         slots.push(WorldChunkSlot {
-            vertex_data_start: read_memory_int(base)? as u32,
-            vertex_data_end: read_memory_int(base + 0x4)? as u32,
+            vertex_data_start,
+            vertex_data_end,
             chunk_x: read_memory_short(base + 0x8)?,
             chunk_z: read_memory_short(base + 0xA)?,
             unknown_e: read_memory_short(base + 0xC)?,
             unknown_f: read_memory_short(base + 0xE)?,
             triangle_data_ptr_unconfirmed: read_memory_int(base + 0x10)? as u32,
             slot_buffer_base: read_memory_int(base + 0x14)? as u32,
+            vertices,
         });
     }
     Ok(slots)
