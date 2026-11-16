@@ -50,22 +50,32 @@ jobs:
 
           $configPath = "src-tauri/tauri.nightly.conf.json"
           $config = Get-Content $configPath -Raw | ConvertFrom-Json
-
           $config | Add-Member -NotePropertyName version -NotePropertyValue $nightlyVersion -Force
 
-          $json = $config | ConvertTo-Json -Depth 20
           $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
+          $json = $config | ConvertTo-Json -Depth 20
           [System.IO.File]::WriteAllText(
               (Resolve-Path $configPath).Path,
               $json,
               $utf8NoBom
           )
 
+          # Update the base config because the frontend imports its version.
+          $baseConfigPath = "src-tauri/tauri.conf.json"
+          $baseConfig = Get-Content $baseConfigPath -Raw | ConvertFrom-Json
+          $baseConfig.version = $nightlyVersion
+
+          $baseJson = $baseConfig | ConvertTo-Json -Depth 20
+          [System.IO.File]::WriteAllText(
+              (Resolve-Path $baseConfigPath).Path,
+              $baseJson,
+              $utf8NoBom
+          )
+
           "FF7_ULTIMA_NIGHTLY_VERSION=$nightlyVersion" >> $env:GITHUB_ENV
 
           Write-Host "Building FF7 Ultima Nightly $nightlyVersion"
-
       - name: Update nightly release tag
         shell: pwsh
         run: |
