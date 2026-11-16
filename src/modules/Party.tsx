@@ -78,6 +78,15 @@ const EditableStat = ({
   );
 };
 
+// Limit data as the game uses it (decomp: Kernel_MarkUsableLimits, Battle_WindowOpenLimitListResetCursor).
+// In battle the Limit list only holds limits that are learned AND belong to the character's current limit
+// level. If none are, the list has 0 rows, its window never finishes opening, and the battle menu soft-locks
+// after choosing Limit (cursor hidden, cancel dead). So the editor must keep at least one limit learned at
+// the current level, like the game does (reaching a level teaches that level's first limit).
+// Bits of `limit_skills` per level (the unused third slot of each level included):
+const LIMIT_LEVEL_MASK: Record<number, number> = { 1: 0x0007, 2: 0x0038, 3: 0x01c0, 4: 0x0200 };
+const LIMIT_LEVEL_FIRST: Record<number, number> = { 1: 0x0001, 2: 0x0008, 3: 0x0040, 4: 0x0200 };
+
 // Compact editor for limit break uses
 const LimitUseEditor = ({ value, onChange }: { value: number; onChange: (value: number) => void }) => {
   const [popoverOpen, setPopoverOpen] = useState(false);
@@ -382,7 +391,13 @@ export function Party({ ff7 }: { ff7: FF7 }) {
                             ? "bg-primary text-primary-foreground"
                             : "hover:bg-slate-700 text-muted-foreground"
                         }`}
-                        onClick={() => handleStatChange('limit_level', level)}
+                        onClick={async () => {
+                          await handleStatChange('limit_level', level);
+                          // Make sure the new level has a usable limit, otherwise the battle Limit menu soft-locks
+                          if (!(currentCharacter.limit_skills & LIMIT_LEVEL_MASK[level])) {
+                            await handleStatChange('limit_skills', currentCharacter.limit_skills | LIMIT_LEVEL_FIRST[level]);
+                          }
+                        }}
                       >
                         {level}
                       </Button>
@@ -434,6 +449,9 @@ export function Party({ ff7 }: { ff7: FF7 }) {
                             const newValue = isActive
                               ? currentCharacter.limit_skills & ~limit.bitmask
                               : currentCharacter.limit_skills | limit.bitmask;
+                            // Don't allow un-learning the last limit of the current level (soft-locks the battle Limit menu)
+                            const levelMask = LIMIT_LEVEL_MASK[currentCharacter.limit_level];
+                            if (isActive && levelMask && !(newValue & levelMask)) return;
                             handleStatChange('limit_skills', newValue);
                           }}
                         >

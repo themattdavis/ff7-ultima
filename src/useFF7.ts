@@ -1706,6 +1706,11 @@ export function useFF7(addresses: FF7Addresses) {
       await callGameFns([
         {address: 0x6cd13a, params: []},
         {address: 0x6c545b, params: [slot]},
+        // Menu_RefreshPartyLimitTables: rebuilds g_MenuPartyStats[*].limitAttacks/limitRecords from the current
+        // party. The game does this itself whenever the party changes (PHS screen, field script party ops via
+        // g_PartyStatsDirty). Without it the slot keeps the PREVIOUS member's limit list, Kernel_MarkUsableLimits
+        // finds none of the new member's limits "usable", and choosing Limit in battle soft-locks the menu.
+        {address: 0x6cbd1e, params: []},
         {address: 0x5cb2cc, params: [slot]},
         {address: 0x5cb127, params: []},
       ]);
@@ -1882,11 +1887,33 @@ export function useFF7(addresses: FF7Addresses) {
           await writeMemory(addresses.character_records + idx * 0x84 + 0xf, limit, DataType.Byte);
         }
       } else {
-        let limit = gameState.battleAllies[0].limit;
-        if (limit !== 0xFF) {
-          for (let i = 0; i < 3; i++) {
+        // The game keeps the limit gauge in several places (see decomp: Battle_TickAtbAndGauges,
+        // Battle_SetLimitReady, Battle_LoadPartyActorsFromEquipment):
+        //   partyStats[i].limitGauge     (0x9a8db8 + i*0x34 + 0x8)  0xFF = full
+        //   partyStats[i].loadLimitGauge (+0xA)                     the goal the HUD gauge climbs towards
+        //   g_MenuPartyStats[i].limitGauge (0xdba498 + i*0x440 + 0x1a)  HUD gauge, value << 8
+        //   readyActorMask / actors[i].limitFlags                  set by Battle_SetLimitReady (0x4375ce)
+        // Only the Limit command shown in the menu depends on the last one, so writing just the first
+        // leaves the gauge "full" in memory while the game still thinks the limit is not ready.
+        const MENU_PARTY_STATS = 0xdba498;
+        const MENU_PARTY_STATS_SIZE = 0x440;
+        const BATTLE_SET_LIMIT_READY = 0x4375ce;
+        const slots: number[] = [];
+        for (let i = 0; i < 3; i++) {
+          if (gameState.partyMemberIds[i] === 0xFF) continue;
+          // limitLevelIndex (+0x5) is 0xFF for a member with no limit break; Battle_SetLimitReady ignores them too
+          const levelIndex = await readMemory(addresses.battle_char_array + i * 0x34 + 0x5, DataType.Byte);
+          if (levelIndex === 0xFF) continue;
+          slots.push(i);
+        }
+        const allFull = slots.length > 0 && slots.every((i) => gameState.battleAllies[i].limit === 0xFF);
+        if (!allFull) {
+          for (const i of slots) {
             await writeMemory(addresses.battle_char_array + i * 0x34 + 0x8, 0xFF, DataType.Short);
+            await writeMemory(addresses.battle_char_array + i * 0x34 + 0xA, 0xFF, DataType.Short);
+            await writeMemory(MENU_PARTY_STATS + i * MENU_PARTY_STATS_SIZE + 0x1a, 0xFF00, DataType.Short);
           }
+          await ff7.callGameFns(slots.map(i => ({ address: BATTLE_SET_LIMIT_READY, params: [i] })));
         } else {
           await ff7.callGameFns([0, 1, 2].map(i => ({
             address: 0x434df3,
