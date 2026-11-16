@@ -1,0 +1,25 @@
+{
+    "productName":  "FF7 Ultima Nightly",
+    "identifier":  "org.m4v3r.ff7-ultima-nightly",
+    "app":  {
+                "windows":  [
+                                {
+                                    "maximizable":  true,
+                                    "width":  720,
+                                    "visible":  true,
+                                    "title":  "FF7 Ultima Nightly - FF7 Real-time Game Editor",
+                                    "resizable":  true,
+                                    "height":  635,
+                                    "theme":  "Dark",
+                                    "backgroundColor":  "#111212"
+                                }
+                            ]
+            },
+    "plugins":  {
+                    "updater":  {
+                                    "endpoints":  [
+                                                      "https://github.com/themattdavis/ff7-ultima/releases/download/nightly/latest.json"
+                                                  ]
+                                }
+                }
+}

@@ -1,0 +1,96 @@
+name: FF7 Ultima Nightly
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ff7-ultima-nightly
+  cancel-in-progress: false
+
+jobs:
+  nightly:
+    name: Build and publish Windows x64 Nightly
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            ./src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Generate nightly version
+        shell: pwsh
+        run: |
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          $stable = [version]$package.version
+
+          $nextPatch = "$($stable.Major).$($stable.Minor).$($stable.Build + 1)"
+          $nightlyVersion = "$nextPatch-nightly.${{ github.run_number }}"
+
+          $configPath = "src-tauri/tauri.nightly.conf.json"
+          $config = Get-Content $configPath -Raw | ConvertFrom-Json
+
+          $config | Add-Member -NotePropertyName version -NotePropertyValue $nightlyVersion -Force
+
+          $json = $config | ConvertTo-Json -Depth 20
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+          [System.IO.File]::WriteAllText(
+              (Resolve-Path $configPath).Path,
+              $json,
+              $utf8NoBom
+          )
+
+          "FF7_ULTIMA_NIGHTLY_VERSION=$nightlyVersion" >> $env:GITHUB_ENV
+
+          Write-Host "Building FF7 Ultima Nightly $nightlyVersion"
+
+      - name: Update nightly release tag
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git tag -f nightly $env:GITHUB_SHA
+          git push origin refs/tags/nightly --force
+
+      - name: Build and publish Nightly release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: nightly
+          releaseName: FF7 Ultima Nightly
+          releaseBody: |
+            Automated FF7 Ultima Nightly build.
+
+            Version: ${{ env.FF7_ULTIMA_NIGHTLY_VERSION }}
+
+            This is a development build and may contain bugs.
+          releaseDraft: false
+          prerelease: true
+          uploadUpdaterJson: true
+          args: --config src-tauri/tauri.nightly.conf.json
