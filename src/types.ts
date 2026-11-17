@@ -116,6 +116,13 @@ export interface BattleCharObj {
   name: string,
   scene_id: number,
 }
+export interface BattleRngSnapshot {
+  active_stream: number;
+  cursors: number[];
+  call_count: number;
+  random_table: number[];
+}
+
 export interface MateriaSlot {
   id: number,
   ap: number,

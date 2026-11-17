@@ -19,6 +19,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { EnemyInfoModal } from "@/components/modals/EnemyInfoModal";
 import { BattleLogModal } from "@/components/modals/BattleLogModal";
+import { BattleRngMonitor } from "@/components/BattleRngMonitor";
 import { useSettings } from "@/useSettings";
 import { useBattleLog } from "@/hooks/useBattleLog";
 
@@ -669,6 +670,8 @@ export function Battle(props: { ff7: FF7 }) {
         setIsOpen={setIsBattleLogModalOpen}
         logs={logs}
       />
+
+      <BattleRngMonitor ff7={ff7} />
 
       <h4 className="text-center mt-4 mb-1 font-medium">Battle Log</h4>
       <div className="text-xs">

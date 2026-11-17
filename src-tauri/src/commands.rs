@@ -269,6 +269,11 @@ pub fn write_field_lights(lights: FieldLights, model_index: u32) -> Result<(), S
     ff7::data::field::write_field_lights(&lights, model_index, &FF7Addresses::new())
 }
 
+#[tauri::command]
+pub fn read_battle_rng_snapshot() -> Result<ff7::types::battle::BattleRngSnapshot, String> {
+    ff7::data::read_battle_rng_snapshot()
+}
+
 pub fn generate_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync {
     tauri::generate_handler![
         read_memory_byte,
@@ -309,6 +314,7 @@ pub fn generate_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync {
         check_for_updates,
         execute_update,
         read_battle_scenes,
+        read_battle_rng_snapshot,
         read_chocobo_data,
         write_chocobo_slot,
         write_fenced_chocobo,

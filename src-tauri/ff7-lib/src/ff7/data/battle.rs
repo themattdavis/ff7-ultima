@@ -578,3 +578,27 @@ impl Default for SceneBattleFormationEntry {
         }
     }
 }
+
+/// Reads the live FF7 Steam battle RNG state.
+/// Addresses are for the verified original FF7_EN.exe memory layout.
+pub fn read_battle_rng_snapshot() -> Result<BattleRngSnapshot, String> {
+    let active_stream = read_memory_signed_int(0x00C06738)?;
+
+    if !(0..=7).contains(&active_stream) {
+        return Err(format!(
+            "Invalid battle RNG stream index: {}",
+            active_stream
+        ));
+    }
+
+    let cursors = read_memory_buffer(0x00C06740, 8)?;
+    let call_count = read_memory_signed_int(0x00C06748)?;
+    let random_table = read_memory_buffer(0x0099DC2C, 256)?;
+
+    Ok(BattleRngSnapshot {
+        active_stream,
+        cursors,
+        call_count,
+        random_table,
+    })
+}

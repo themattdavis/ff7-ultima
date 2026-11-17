@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { DataType, readMemory, writeMemory, setMemoryProtection, readMemoryBuffer } from "./memory";
 import { waitFor } from "./util";
 import { useFF7Context } from "./FF7Context";
-import { EnemyData, GameModule, RandomEncounters, WorldFieldTblItem, Destination, PartyMember, FieldLights } from "./types";
+import { EnemyData, BattleRngSnapshot, GameModule, RandomEncounters, WorldFieldTblItem, Destination, PartyMember, FieldLights } from "./types";
 import { FF7Addresses } from "./ff7Addresses";
 import { PositiveStatuses, statuses } from "./ff7Statuses";
 import { battles } from "./ff7Battles";
@@ -1203,6 +1203,9 @@ export function useFF7(addresses: FF7Addresses) {
     },
     readEnemyData: async (enemyId: number) => {
       return await invoke("read_enemy_data", { id: enemyId }) as EnemyData;
+    },
+    readBattleRngSnapshot: async () => {
+      return await invoke("read_battle_rng_snapshot") as BattleRngSnapshot;
     },
     setExpMultiplier: async (multiplier: number) => {
       if (multiplier === 0 || multiplier >= 1) {
