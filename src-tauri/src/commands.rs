@@ -274,6 +274,11 @@ pub fn read_battle_rng_snapshot() -> Result<ff7::types::battle::BattleRngSnapsho
     ff7::data::read_battle_rng_snapshot()
 }
 
+#[tauri::command]
+pub fn write_battle_rng_snapshot(snapshot: ff7::types::battle::BattleRngSnapshot) -> Result<(), String> {
+    ff7::data::write_battle_rng_snapshot(&snapshot)
+}
+
 pub fn generate_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync {
     tauri::generate_handler![
         read_memory_byte,
@@ -315,6 +320,7 @@ pub fn generate_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync {
         execute_update,
         read_battle_scenes,
         read_battle_rng_snapshot,
+        write_battle_rng_snapshot,
         read_chocobo_data,
         write_chocobo_slot,
         write_fenced_chocobo,

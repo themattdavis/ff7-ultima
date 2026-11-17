@@ -2,12 +2,14 @@ use super::items::Item;
 use super::kernel::Elemental;
 use serde::Serialize;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct BattleRngSnapshot {
     pub active_stream: i32,
     pub cursors: Vec<u8>,
     pub call_count: i32,
     pub random_table: Vec<u8>,
+    pub system_rng: Option<u32>,
+    pub offset: Option<u8>,
 }
 
 #[derive(Serialize)]

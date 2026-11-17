@@ -582,6 +582,15 @@ impl Default for SceneBattleFormationEntry {
 /// Reads the live FF7 Steam battle RNG state.
 /// Addresses are for the verified original FF7_EN.exe memory layout.
 pub fn read_battle_rng_snapshot() -> Result<BattleRngSnapshot, String> {
+    let system_rng_pointer = read_memory_int(0x007BCFE0)?;
+    if system_rng_pointer < 0x10000 {
+        return Err(format!("Invalid System RNG pointer: {:#010X}", system_rng_pointer));
+    }
+    let system_rng_address = system_rng_pointer.checked_add(0x114)
+        .ok_or_else(|| "System RNG address overflow".to_string())?;
+    let system_rng = read_memory_int(system_rng_address)?;
+    let offset = read_memory_byte(0x00C05F80)?;
+
     let active_stream = read_memory_signed_int(0x00C06738)?;
 
     if !(0..=7).contains(&active_stream) {
@@ -596,9 +605,64 @@ pub fn read_battle_rng_snapshot() -> Result<BattleRngSnapshot, String> {
     let random_table = read_memory_buffer(0x0099DC2C, 256)?;
 
     Ok(BattleRngSnapshot {
+        system_rng: Some(system_rng),
+        offset: Some(offset),
         active_stream,
         cursors,
         call_count,
         random_table,
     })
+}
+
+
+/// Restores a complete battle RNG snapshot into the live FF7 process.
+pub fn write_battle_rng_snapshot(snapshot: &BattleRngSnapshot) -> Result<(), String> {
+    if !(0..=7).contains(&snapshot.active_stream) {
+        return Err(format!(
+            "Invalid battle RNG stream index: {}",
+            snapshot.active_stream
+        ));
+    }
+
+    if snapshot.cursors.len() != 8 {
+        return Err(format!(
+            "Expected 8 RNG cursors, received {}",
+            snapshot.cursors.len()
+        ));
+    }
+
+    if snapshot.random_table.len() != 256 {
+        return Err(format!(
+            "Expected 256 random table bytes, received {}",
+            snapshot.random_table.len()
+        ));
+    }
+
+    let system_rng = snapshot.system_rng
+        .ok_or_else(|| "This saved snapshot has no System RNG. Save a new snapshot first.".to_string())?;
+
+    let system_rng_pointer = read_memory_int(0x007BCFE0)?;
+    if system_rng_pointer < 0x10000 {
+        return Err(format!("Invalid System RNG pointer: {:#010X}", system_rng_pointer));
+    }
+    let system_rng_address = system_rng_pointer.checked_add(0x114)
+        .ok_or_else(|| "System RNG address overflow".to_string())?;
+
+    write_memory_int(system_rng_address, system_rng)?;
+
+    if let Some(offset) = snapshot.offset {
+        write_memory_byte(0x00C05F80, offset)?;
+    }
+
+    // Restore the shared random table and all stream cursors first.
+    write_memory_buffer(0x0099DC2C, snapshot.random_table.clone())?;
+    write_memory_buffer(0x00C06740, snapshot.cursors.clone())?;
+
+    // Restore the Rand16 call counter.
+    write_memory_signed_int(0x00C06748, snapshot.call_count)?;
+
+    // Restore the active stream last.
+    write_memory_signed_int(0x00C06738, snapshot.active_stream)?;
+
+    Ok(())
 }

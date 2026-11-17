@@ -14,6 +14,7 @@ import { General } from "./modules/General";
 import { Field } from "./modules/Field";
 import { World } from "./modules/World";
 import { Battle } from "./modules/Battle";
+import { SCM } from "./modules/SCM";
 import { Party } from "./modules/Party";
 import { Chocobos } from "./modules/Chocobos";
 import { Variables } from "./modules/Variables";
@@ -32,7 +33,8 @@ import {
   Globe, 
   Save, 
   Timer,
-  LucideIcon 
+  LucideIcon,
+  Dices
 } from "lucide-react";
 
 const TAB_TITLES: Record<Tabs, string> = {
@@ -40,6 +42,7 @@ const TAB_TITLES: Record<Tabs, string> = {
   [Tabs.Field]: "Field",
   [Tabs.World]: "World",
   [Tabs.Battle]: "Battle",
+  [Tabs.SCM]: "Battle Sim",
   [Tabs.Party]: "Party",
   [Tabs.Chocobos]: "Chocobos",
   [Tabs.Variables]: "Variables",
@@ -53,6 +56,7 @@ const TAB_ICONS: Record<Tabs, LucideIcon> = {
   [Tabs.Field]: MapIcon,
   [Tabs.World]: Globe,
   [Tabs.Battle]: BusterSword,
+  [Tabs.SCM]: Dices,
   [Tabs.Party]: CloudParty,
   [Tabs.Chocobos]: ChocoboHead,
   [Tabs.Variables]: BinaryGrid,
@@ -135,6 +139,8 @@ function Home() {
         return <World ff7={ff7} mapWindow={mapWindow} setMapWindow={setMapWindow} mapWebview={mapWebview} setMapWebview={setMapWebview} />;
       case Tabs.Battle:
         return <Battle ff7={ff7} />;
+      case Tabs.SCM:
+        return <SCM ff7={ff7} />;
       case Tabs.Party:
         return <Party ff7={ff7} />;
       case Tabs.Chocobos:

@@ -6,6 +6,7 @@ export enum Tabs {
   Field = "field",
   World = "world",
   Battle = "battle",
+  SCM = "scm",
   Party = "party",
   Chocobos = "chocobos",
   Variables = "variables",
@@ -121,6 +122,8 @@ export interface BattleRngSnapshot {
   cursors: number[];
   call_count: number;
   random_table: number[];
+  system_rng?: number,
+  offset?: number;
 }
 
 export interface MateriaSlot {

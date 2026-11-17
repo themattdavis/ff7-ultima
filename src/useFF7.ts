@@ -1207,6 +1207,9 @@ export function useFF7(addresses: FF7Addresses) {
     readBattleRngSnapshot: async () => {
       return await invoke("read_battle_rng_snapshot") as BattleRngSnapshot;
     },
+    writeBattleRngSnapshot: async (snapshot: BattleRngSnapshot) => {
+      await invoke("write_battle_rng_snapshot", { snapshot });
+    },
     setExpMultiplier: async (multiplier: number) => {
       if (multiplier === 0 || multiplier >= 1) {
         const value = multiplier.toString(16);
