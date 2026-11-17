@@ -1,4 +1,4 @@
-import { atom, useAtom } from 'jotai';
+﻿import { atom, useAtom } from 'jotai';
 import { useEffect, useCallback, useRef } from 'react';
 import { debounce } from 'lodash-es';
 import { load, Store } from '@tauri-apps/plugin-store';
@@ -42,6 +42,10 @@ export interface GeneralSettings {
     skipDialogues: boolean;
     runByDefault: boolean;
     autoSense: boolean;
+    walkAnywhere: boolean;
+    worldSuperSpeed: boolean;
+    worldZoomTilt: boolean;
+    menuAlwaysEnabled: boolean;
     autoSkipFMV: boolean;
     disableGlacierTemp: boolean;
     disableWhirlwindBattles: boolean;
@@ -66,6 +70,10 @@ export interface HackSettings {
   skipDialogues?: boolean;
   runByDefault?: boolean;
   autoSense?: boolean;
+  walkAnywhere?: boolean;
+  worldSuperSpeed?: boolean;
+  worldZoomTilt?: boolean;
+  menuAlwaysEnabled?: boolean;
 }
 
 export interface SaveStates {
@@ -113,7 +121,7 @@ const hackSettingsAtom = atom<HackSettings | null>(null);
 const shortcutsAtom = atom<Record<string, string> | null>(null);
 const saveStatesAtom = atom<SaveStates>({ fieldStates: [], snowboardStates: [], worldStates: [] });
 
-// Shared display order atom — the single source of truth for save state row ordering.
+// Shared display order atom â€” the single source of truth for save state row ordering.
 // Lives outside React component state so shortcuts.ts can read it via ff7.saveStates.
 export const saveStateDisplayOrderAtom = atom<string[]>([]);
 
@@ -367,6 +375,10 @@ function getDefaultGeneralSettings(): GeneralSettings {
       skipDialogues: true,
       runByDefault: true,
       autoSense: true,
+      walkAnywhere: true,
+      worldSuperSpeed: true,
+      worldZoomTilt: true,
+      menuAlwaysEnabled: true,
       autoSkipFMV: true,
       disableGlacierTemp: true,
       disableWhirlwindBattles: true,

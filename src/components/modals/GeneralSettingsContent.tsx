@@ -44,6 +44,10 @@ export function GeneralSettingsContent({ ff7 }: GeneralSettingsContentProps) {
     skipDialogues: true,
     runByDefault: true,
     autoSense: true,
+    walkAnywhere: true,
+    worldSuperSpeed: true,
+    worldZoomTilt: true,
+    menuAlwaysEnabled: true,
     autoSkipFMV: true,
     disableGlacierTemp: true,
     disableWhirlwindBattles: true,
@@ -91,6 +95,14 @@ export function GeneralSettingsContent({ ff7 }: GeneralSettingsContentProps) {
         return ff7.gameState.fieldRunByDefaultEnabled;
       case 'autoSense':
         return ff7.gameState.autoSenseEnabled;
+      case 'walkAnywhere':
+        return ff7.gameState.walkAnywhereEnabled;
+      case 'worldSuperSpeed':
+        return ff7.gameState.worldSpeedMultiplier === 12;
+      case 'worldZoomTilt':
+        return ff7.gameState.worldZoomTiltEnabled;
+      case 'menuAlwaysEnabled':
+        return ff7.gameState.menuAlwaysEnabled;
       default:
         return undefined;
     }
@@ -117,6 +129,10 @@ export function GeneralSettingsContent({ ff7 }: GeneralSettingsContentProps) {
     { key: 'instantATB', label: 'Instant ATB' },
     { key: 'manualSlots', label: 'Manual Slots' },
     { key: 'autoSense', label: 'Auto Sense' },
+    { key: 'walkAnywhere', label: 'Walk Anywhere' },
+    { key: 'worldSuperSpeed', label: 'World Super Speed' },
+    { key: 'worldZoomTilt', label: 'World Zoom & Tilt' },
+    { key: 'menuAlwaysEnabled', label: 'Enable All Menus' },
   ];
 
   const generalSettingsHacks: (keyof typeof rememberedHacks)[] = [

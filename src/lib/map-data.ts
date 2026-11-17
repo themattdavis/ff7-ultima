@@ -358,6 +358,6 @@ export const WORLD_MAP_UNDERWATER_TEXTURES: WorldMapTexture[] = [
 export const WORLD_MAP_GLACIER_TEXTURES: WorldMapTexture[] = [
   { id: 0, name: "hokola01", width: 64, height: 64, uOffset: 0, vOffset: 0 },
   { id: 1, name: "hokola02", width: 64, height: 64, uOffset: 0, vOffset: 128 },
-  { id: 2, name: "snwfldl", width: 64, height: 64, uOffset: 0, vOffset: 32 },
+  { id: 2, name: "snwfldl", width: 64, height: 64, uOffset: 0, vOffset: 64 },
   { id: 3, name: "snwfld2", width: 64, height: 64, uOffset: 0, vOffset: 192 },
 ];

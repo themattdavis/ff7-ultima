@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { register, unregister, isRegistered as isTauriShortcutRegistered, unregisterAll } from '@tauri-apps/plugin-global-shortcut';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { Shortcut, defaultShortcuts } from "./shortcuts";
+import { Shortcut, ShortcutContext, defaultShortcuts } from "./shortcuts";
 import { useSettings } from "./useSettings";
 import { useFF7Context } from "./FF7Context";
 import { GameModule } from "./types";
@@ -58,7 +58,12 @@ export function useShortcuts() {
   const [shortcutsPaused, setShortcutsPaused] = useState(false);
   const { connected, gameState } = useFF7Context();
   const currentModule = gameState.currentModule as GameModule;
-  const { generalSettings, shortcuts: savedShortcuts, updateShortcuts } = useSettings();
+  const { generalSettings, hackSettings, shortcuts: savedShortcuts, updateShortcuts, updateGeneralSettings, updateHackSettings } = useSettings();
+
+  // Shortcut callbacks are registered once and would otherwise see stale settings,
+  // so they read the latest values through this ref when a key is pressed.
+  const contextRef = useRef<ShortcutContext>({ generalSettings, hackSettings, updateGeneralSettings, updateHackSettings });
+  contextRef.current = { generalSettings, hackSettings, updateGeneralSettings, updateHackSettings };
 
   const shortcutsEnabled = generalSettings?.enableShortcuts ?? true;
 
@@ -110,7 +115,7 @@ export function useShortcuts() {
             if (event.state === "Pressed") {
               console.debug(`${shortcut.key} pressed, calling ${shortcut.action}`);
               try {
-                shortcut.callback((window as any).FF7);
+                shortcut.callback((window as any).FF7, contextRef.current);
               } catch (e) {
                 console.error(`Error calling ${shortcut.action}:`, e);
               }

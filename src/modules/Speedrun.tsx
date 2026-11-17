@@ -3,6 +3,7 @@ import { EditPopover } from "@/components/EditPopover";
 import { Modal } from "@/components/Modal";
 import { Button } from "@/components/ui/button";
 import { WarpFieldModal } from "@/components/modals/WarpFieldModal";
+import { GameMomentModal } from "@/components/modals/GameMomentModal";
 import { EnemyInfoModal } from "@/components/modals/EnemyInfoModal";
 import { SaveStates } from "@/components/SaveStates";
 import { Stepgraph } from "./Stepgraph";
@@ -151,9 +152,16 @@ function FieldSection({ ff7 }: { ff7: FF7 }) {
   const state = ff7.gameState;
   const { generalSettings, updateGeneralSettings } = useSettings();
   const [isWarpModalOpen, setIsWarpModalOpen] = useState(false);
+  const [isGameMomentModalOpen, setIsGameMomentModalOpen] = useState(false);
   const [editValue, setEditValue] = useState("");
   const [editTitle, setEditTitle] = useState("");
   const [popoverOpen, setPopoverOpen] = useState(false);
+
+  const onSubmitGameMoment = (momentId: string | null) => {
+    if (momentId === null) return;
+    ff7.setGameMoment(parseInt(momentId));
+    setIsGameMomentModalOpen(false);
+  };
 
   const stepLockEnabled = generalSettings?.stepLockEnabled ?? false;
 
@@ -245,26 +253,37 @@ function FieldSection({ ff7 }: { ff7: FF7 }) {
   return (
     <>
       <div className="mb-2">
-        <Row label="Field ID" onRowClick={() => setIsWarpModalOpen(true)}>
-          <TooltipProvider>
-            <Tooltip delayDuration={100}>
-              <TooltipTrigger asChild>
-                <div className="h-4">
-                  <span className="cursor-pointer">
-                    {state.fieldId}
-                    {state.fieldId > 0 && (
-                      <span className="text-zinc-400 ml-1">
-                        ({state.fieldId > 63 ? state.fieldName : `wm${state.fieldId - 1}`})
-                      </span>
-                    )}
-                  </span>
-                  <Button size="xs" className="ml-2">Warp</Button>
-                </div>
-              </TooltipTrigger>
-              <TooltipContent><p className="text-xs">Click to warp to another field</p></TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-        </Row>
+        {/* The min-w-0 rules let both rows shrink to exactly half the width; without them the
+            Field ID row (name + Warp button) pushes past its column and looks wider than Game Moment. */}
+        <div className="grid grid-cols-2 gap-x-1 [&>div]:min-w-0 [&_label]:min-w-0 [&_label>div:last-child]:min-w-0">
+          <Row label="Field ID" className="!my-0" onRowClick={() => setIsWarpModalOpen(true)}>
+            <TooltipProvider>
+              <Tooltip delayDuration={100}>
+                <TooltipTrigger asChild>
+                  <div className="h-4 flex items-center min-w-0">
+                    <span className="cursor-pointer flex items-center min-w-0">
+                      {state.fieldId}
+                      {state.fieldId > 0 && (
+                        <span
+                          className="text-zinc-400 ml-1 truncate max-w-[72px]"
+                          title={state.fieldId > 63 ? state.fieldName : `wm${state.fieldId - 1}`}
+                        >
+                          ({state.fieldId > 63 ? state.fieldName : `wm${state.fieldId - 1}`})
+                        </span>
+                      )}
+                    </span>
+                    <Button size="xs" className="ml-2 shrink-0">Warp</Button>
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent><p className="text-xs">Click to warp to another field</p></TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          </Row>
+
+          <Row label="Game Moment" className="!my-0" onRowClick={() => setIsGameMomentModalOpen(true)}>
+            {state.gameMoment}
+          </Row>
+        </div>
 
         <Row label={
           <span className="flex items-center gap-3">
@@ -435,6 +454,13 @@ function FieldSection({ ff7 }: { ff7: FF7 }) {
         </Row>
       </div>
 
+      <GameMomentModal
+        isOpen={isGameMomentModalOpen}
+        onClose={() => setIsGameMomentModalOpen(false)}
+        onSubmit={onSubmitGameMoment}
+        currentGameMoment={state.gameMoment}
+      />
+
       <WarpFieldModal
         isOpen={isWarpModalOpen}
         onClose={() => setIsWarpModalOpen(false)}
@@ -506,7 +532,10 @@ function BattleSection({ ff7 }: { ff7: FF7 }) {
     setIsEnemyInfoModalOpen(true);
   };
 
-  const StatCell = ({ char, index, field, label }: { char: BattleCharObj; index: number; field: "HP" | "MP" | "Max HP" | "Max MP"; label: keyof BattleCharObj }) => (
+  // NOTE: this is a plain render function, not a nested component. A component declared
+  // inside BattleSection gets a new identity on every render, so React remounted the
+  // popover each time the game state polled and the edit box closed instantly.
+  const renderStatCell = (char: BattleCharObj, index: number, field: "HP" | "MP" | "Max HP" | "Max MP", label: keyof BattleCharObj) => (
     <EditPopover
       open={popoverOpen && currentAllyEditing === index && editTitle === field}
       onOpenChange={setPopoverOpen}
@@ -557,16 +586,16 @@ function BattleSection({ ff7 }: { ff7: FF7 }) {
               </td>
               <td className="p-1 px-2 text-nowrap w-[100px]">
                 <div className="flex gap-1">
-                  <StatCell char={char} index={char.index} field="HP" label="hp" />
+                  {renderStatCell(char, char.index, "HP", "hp")}
                   <span>/</span>
-                  <StatCell char={char} index={char.index} field="Max HP" label="max_hp" />
+                  {renderStatCell(char, char.index, "Max HP", "max_hp")}
                 </div>
               </td>
               <td className="p-1 px-2 text-nowrap w-[66px]">
                 <div className="flex gap-1">
-                  <StatCell char={char} index={char.index} field="MP" label="mp" />
+                  {renderStatCell(char, char.index, "MP", "mp")}
                   <span>/</span>
-                  <StatCell char={char} index={char.index} field="Max MP" label="max_mp" />
+                  {renderStatCell(char, char.index, "Max MP", "max_mp")}
                 </div>
               </td>
               <td className="p-1 cursor-pointer whitespace-pre hover:bg-zinc-700" onClick={() => { setCurrentAllyEditing(index + 4); setEditStatusModalOpen(true); }}>

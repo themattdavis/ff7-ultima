@@ -17,10 +17,12 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { gameMoments } from "@/ff7GameMoments";
 import { Party } from "@/components/Party";
+import { useSettings } from "@/useSettings";
 
 export function General(props: { ff7: FF7 }) {
   const ff7 = props.ff7;
   const state = ff7.gameState;
+  const { generalSettings, hackSettings, updateHackSettings } = useSettings();
 
   const [editValue, setEditValue] = useState("");
   const [editTitle, setEditTitle] = useState("");
@@ -417,7 +419,13 @@ export function General(props: { ff7: FF7 }) {
             </Popover>
           </Row>
           <Row label="Enable all menus">
-            <Switch checked={state.menuAlwaysEnabled} onClick={() => state.menuAlwaysEnabled ? ff7.disableMenuAlwaysEnabled() : ff7.enableMenuAlwaysEnabled()} />
+            <Switch checked={state.menuAlwaysEnabled} onClick={() => {
+              const newValue = !state.menuAlwaysEnabled;
+              newValue ? ff7.enableMenuAlwaysEnabled() : ff7.disableMenuAlwaysEnabled();
+              if (generalSettings?.rememberedHacks.menuAlwaysEnabled) {
+                updateHackSettings({ ...(hackSettings || {}), menuAlwaysEnabled: newValue });
+              }
+            }} />
           </Row>
         </div>
       </div>

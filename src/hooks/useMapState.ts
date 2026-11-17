@@ -66,6 +66,13 @@ const dimensions = {
   glacier: { horizontal: 2, vertical: 2 }
 };
 
+// When a story-progress alternative is enabled, the meshes of a base section come from (and have
+// to be written back to) the matching alternative section stored after the 63 regular ones.
+function resolveSectionIdx(sectionIdx: number, enabledAlternatives: number[]): number {
+  const altIndex = ALTERNATIVE_SECTIONS.findIndex(alt => alt.id === sectionIdx && enabledAlternatives.includes(alt.id));
+  return altIndex === -1 ? sectionIdx : 63 + altIndex;
+}
+
 export function useMapState() {
   const [state, setState] = useAtom(mapStateAtom)
   const { getFile } = useLgpState()
@@ -100,10 +107,7 @@ export function useMapState() {
       for (let column = 0; column < SECTIONS_HORIZONTAL * MESHES_IN_COLUMN; column++) {
         const sectionIdx = Math.floor(row / MESHES_IN_ROW) * SECTIONS_HORIZONTAL + Math.floor(column / MESHES_IN_COLUMN);
         const meshIdx = (row % MESHES_IN_ROW) * MESHES_IN_COLUMN + (column % MESHES_IN_COLUMN);
-        let trueSectionIdx = sectionIdx;
-        if (ALTERNATIVE_SECTIONS.some(alt => alt.id === sectionIdx && enabledAlternatives.includes(alt.id))) {
-          trueSectionIdx = 63 + ALTERNATIVE_SECTIONS.findIndex(alt => alt.id === sectionIdx);
-        }
+        const trueSectionIdx = resolveSectionIdx(sectionIdx, enabledAlternatives);
         if (!onlyRefresh || sectionIdx === onlyRefresh) {
           rowData.push(rawMapData.readMesh(trueSectionIdx, meshIdx));
         } else if (state.worldmap) {
@@ -171,8 +175,33 @@ export function useMapState() {
 
   const setEnabledAlternatives = (alternatives: number[], changed?: AlternativeSection) => {
     setState(prev => {
+      let changedMeshes = prev.changedMeshes;
+
+      // Meshes edited while the previous alternative was showing belong to that section. Write
+      // them into the map before the affected meshes are re-read, otherwise the edits would be
+      // lost (or end up in the wrong section when saving).
+      if (prev.map && prev.worldmap) {
+        const { horizontal } = dimensions[prev.mapType as keyof typeof dimensions];
+        const stillPending: [number, number][] = [];
+        for (const [row, col] of prev.changedMeshes) {
+          const sectionIdx = Math.floor(row / MESHES_IN_ROW) * horizontal + Math.floor(col / MESHES_IN_COLUMN);
+          const meshData = prev.worldmap[row]?.[col];
+          if (meshData && (!changed || sectionIdx === changed.id)) {
+            const meshIdx = (row % MESHES_IN_ROW) * MESHES_IN_COLUMN + (col % MESHES_IN_COLUMN);
+            try {
+              prev.map.writeMesh(resolveSectionIdx(sectionIdx, prev.enabledAlternatives), meshIdx, meshData);
+              continue;
+            } catch (error) {
+              console.error("[Map] Could not keep edits of mesh", row, col, error);
+            }
+          }
+          stillPending.push([row, col]);
+        }
+        changedMeshes = stillPending;
+      }
+
       const worldmapData = prev.map ? parseWorldmap(prev.map, prev.mapType, alternatives, changed?.id) : null;
-      return { ...prev, enabledAlternatives: alternatives, worldmap: worldmapData };
+      return { ...prev, enabledAlternatives: alternatives, worldmap: worldmapData, changedMeshes };
     });
   }
 
@@ -201,7 +230,9 @@ export function useMapState() {
     
     state.changedMeshes.forEach(mesh => {
       const [row, col] = mesh;
-      const sectionIdx = Math.floor(row / MESHES_IN_ROW) * dimensions[state.mapType as keyof typeof dimensions].horizontal + Math.floor(col / MESHES_IN_COLUMN);
+      const baseSectionIdx = Math.floor(row / MESHES_IN_ROW) * dimensions[state.mapType as keyof typeof dimensions].horizontal + Math.floor(col / MESHES_IN_COLUMN);
+      // Write to the alternative section if that is what is currently shown
+      const sectionIdx = resolveSectionIdx(baseSectionIdx, state.enabledAlternatives);
       const meshIdx = (row % MESHES_IN_ROW) * MESHES_IN_COLUMN + (col % MESHES_IN_COLUMN);
       const meshData = worldmap[row]?.[col];
       if (meshData) {
@@ -209,10 +240,11 @@ export function useMapState() {
       }
     });
 
+    // Build both files before writing either, so a size error can't leave a half-saved map
     const path = `${state.dataPath}/data/wm/${state.mapId}`
     const mapData = map.writeMap()
+    const botData = map.writeBot(state.mapType)
     await writeFile(path + '.MAP', mapData)
-    const botData = map.writeBot()
     await writeFile(path + '.BOT', botData)
     console.timeEnd("[Map] Saving map")
   }

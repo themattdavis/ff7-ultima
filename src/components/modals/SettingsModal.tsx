@@ -24,7 +24,7 @@ export function SettingsModal({ isOpen, setIsOpen, ff7 }: SettingsModalProps) {
           <TabsTrigger value="general" className="flex-1">General</TabsTrigger>
           <TabsTrigger value="shortcuts" className="flex-1">Shortcuts</TabsTrigger>
         </TabsList>
-        <TabsContent value="general" className="mt-4">
+        <TabsContent value="general" className="mt-4 max-h-[70vh] overflow-y-auto pr-2">
           <GeneralSettingsContent ff7={ff7} />
         </TabsContent>
         <TabsContent value="shortcuts" className="mt-4">

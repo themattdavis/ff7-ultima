@@ -162,6 +162,18 @@ export function useFF7(addresses: FF7Addresses) {
         if (rememberedHacks.autoSense && hackSettings.autoSense !== undefined && hackSettings.autoSense !== gameState.autoSenseEnabled) {
           await ff7.toggleAutoSense();
         }
+        if (rememberedHacks.walkAnywhere && hackSettings.walkAnywhere !== undefined && hackSettings.walkAnywhere !== gameState.walkAnywhereEnabled) {
+          hackSettings.walkAnywhere ? await ff7.enableWalkAnywhere() : await ff7.disableWalkAnywhere();
+        }
+        if (rememberedHacks.worldSuperSpeed && hackSettings.worldSuperSpeed !== undefined) {
+          await ff7.setWorldSpeedMultiplier(hackSettings.worldSuperSpeed ? 12 : 2);
+        }
+        if (rememberedHacks.worldZoomTilt && hackSettings.worldZoomTilt !== undefined && hackSettings.worldZoomTilt !== gameState.worldZoomTiltEnabled) {
+          await ff7.setWorldZoomTiltEnabled(hackSettings.worldZoomTilt);
+        }
+        if (rememberedHacks.menuAlwaysEnabled && hackSettings.menuAlwaysEnabled !== undefined && hackSettings.menuAlwaysEnabled !== gameState.menuAlwaysEnabled) {
+          hackSettings.menuAlwaysEnabled ? await ff7.enableMenuAlwaysEnabled() : await ff7.disableMenuAlwaysEnabled();
+        }
         if (generalSettings?.stepLockEnabled && generalSettings?.stepLockValues) {
           const { stepId, stepFraction, stepOffset, formationIndex, dangerValue } = generalSettings.stepLockValues;
           await writeMemory(addresses.step_id, stepId, DataType.Int);
@@ -1739,6 +1751,56 @@ export function useFF7(addresses: FF7Addresses) {
       return invoke("read_attack_names");
     },
     async addItem(id: number, quantity: number) {
+      if (quantity === 0) return;
+
+      if (quantity < 0) {
+        // The game's add-item function can't subtract (a negative quantity just corrupts the
+        // 7-bit quantity field), so removal edits the inventory directly.
+        const toRemove = -quantity;
+        const EMPTY_RECORD = 0xffff;
+        const INVENTORY_SLOTS = 0x140;
+        const inventoryAddr = addresses.savemap + 0x4fc;
+
+        // Field inventory in the savemap: 16-bit records, item id in the low 9 bits and
+        // quantity in the high 7. Remaining records are kept packed, empty ones are 0xFFFF.
+        const raw = await readMemoryBuffer(inventoryAddr, INVENTORY_SLOTS * 2);
+        const records: number[] = [];
+        for (let i = 0; i < INVENTORY_SLOTS; i++) records.push(raw[i * 2] | (raw[i * 2 + 1] << 8));
+
+        const slot = records.findIndex(r => r !== EMPTY_RECORD && (r & 0x1ff) === id);
+        if (slot !== -1) {
+          const remaining = (records[slot] >> 9) - toRemove;
+          if (remaining > 0) {
+            records[slot] = id | (remaining << 9);
+          } else {
+            records.splice(slot, 1); // used up: drop the record and shift the rest up
+            records.push(EMPTY_RECORD);
+          }
+          const out: number[] = [];
+          for (const r of records) out.push(r & 0xff, (r >> 8) & 0xff);
+          await writeMemory(inventoryAddr, out, DataType.Buffer);
+        }
+
+        if (gameState.currentModule === GameModule.Battle) {
+          // The battle inventory is a separate copy that overwrites the savemap when the battle
+          // ends, so it has to be reduced as well or the removal would be undone.
+          const items = await readMemoryBuffer(addresses.battle_party_items, 0x140 * 6);
+          for (let i = 0; i < 0x140; i++) {
+            const battleItemId = items[i * 6] + items[i * 6 + 1] * 256;
+            if (battleItemId !== id) continue;
+            const remaining = items[i * 6 + 2] - toRemove;
+            if (remaining > 0) {
+              await writeMemory(addresses.battle_party_items + i * 6 + 2, remaining, DataType.Byte);
+            } else {
+              await writeMemory(addresses.battle_party_items + i * 6, 0xffff, DataType.Short);
+              await writeMemory(addresses.battle_party_items + i * 6 + 2, 0, DataType.Byte);
+            }
+            break;
+          }
+        }
+        return;
+      }
+
       const itemId = id | quantity << 9;
       await callGameFn(addresses.party_add_item_fn, [itemId]);
       if (gameState.currentModule === GameModule.Battle) {

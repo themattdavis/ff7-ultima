@@ -1,6 +1,7 @@
 import Row from "@/components/Row";
 import { LocationName, WorldModelIds, WorldWalkmeshType, GameModule } from "@/types";
 import { FF7 } from "@/useFF7";
+import { useSettings } from "@/useSettings";
 import Worldmap from "@/assets/worldmap.png";
 import Chocobo from "@/assets/chocobo.png";
 import { useEffect, useRef, useState, useMemo, useCallback, memo } from "react";
@@ -152,6 +153,14 @@ const EncountersTable = memo(
 export function World(props: { ff7: FF7; mapWindow: Window | null; setMapWindow: (w: Window | null) => void; mapWebview: Webview | null; setMapWebview: (w: Webview | null) => void }) {
   const ff7 = props.ff7;
   const state = ff7.gameState;
+  const { generalSettings, hackSettings, updateHackSettings } = useSettings();
+
+  // Stores a hack's new value if it is ticked in "Remember Hacks".
+  const rememberHack = (key: 'walkAnywhere' | 'worldSuperSpeed' | 'worldZoomTilt', value: boolean) => {
+    if (generalSettings?.rememberedHacks[key]) {
+      updateHackSettings({ ...(hackSettings || {}), [key]: value });
+    }
+  };
   const { gameData } = useFF7Context();
   const [coords, setCoords] = useState({ x: 0, z: 0 });
   const [zoom, setZoom] = useState(0);
@@ -209,14 +218,14 @@ export function World(props: { ff7: FF7; mapWindow: Window | null; setMapWindow:
     // Find which terrain type (set index) matches the current walkmesh_type
     const currentTerrain = state.worldCurrentModel.walkmesh_type;
     const setIndex = regionSet.findIndex(terrain => terrain === currentTerrain);
-    
+
     if (setIndex === -1) {
       return null;
     }
 
     // Get the encounter set for this region and terrain type
     const encounterSet = gameData.worldEncounterData.randomEncounters.regions[currentRegion].sets[setIndex];
-    
+
     return {
       region: currentRegion,
       terrain: currentTerrain,
@@ -253,10 +262,10 @@ export function World(props: { ff7: FF7; mapWindow: Window | null; setMapWindow:
     });
 
     // Format enemy list with counts
-    const enemyList = Array.from(enemyCounts.entries()).map(([name, count]) => 
+    const enemyList = Array.from(enemyCounts.entries()).map(([name, count]) =>
       count > 1 ? `${name.trim()} (x${count})` : name.trim()
     );
-    
+
     return enemyList.join(', ') || 'Unknown';
   };
 
@@ -344,7 +353,7 @@ export function World(props: { ff7: FF7; mapWindow: Window | null; setMapWindow:
         focus: true,
         backgroundColor: '#111212',
       });
-      
+
       const resize = async () => {
         const size = await appWindow.innerSize();
         await webview.setSize(size);
@@ -414,22 +423,26 @@ export function World(props: { ff7: FF7; mapWindow: Window | null; setMapWindow:
       <div className="flex gap-1">
         <div className="flex-1">
           <Row label="Zoom & Tilt">
-            <Switch checked={ff7.gameState.worldZoomTiltEnabled} onCheckedChange={(checked) => ff7.setWorldZoomTiltEnabled(checked)} />
+            <Switch checked={ff7.gameState.worldZoomTiltEnabled} onCheckedChange={(checked) => { ff7.setWorldZoomTiltEnabled(checked); rememberHack('worldZoomTilt', checked); }} />
           </Row>
         </div>
         <div className="flex-1">
           <Row label="Super Speed">
-            <Switch 
-              checked={ff7.gameState.worldSpeedMultiplier === 12} 
-              onCheckedChange={(checked) => ff7.setWorldSpeedMultiplier(checked ? 12 : 2)} 
+            <Switch
+              checked={ff7.gameState.worldSpeedMultiplier === 12}
+              onCheckedChange={(checked) => { ff7.setWorldSpeedMultiplier(checked ? 12 : 2); rememberHack('worldSuperSpeed', checked); }}
             />
           </Row>
         </div>
         <div className="flex-1">
           <Row label="Walk Anywhere">
-            <Switch 
+            <Switch
               checked={ff7.gameState.walkAnywhereEnabled}
-              onCheckedChange={() => !ff7.gameState.walkAnywhereEnabled ? ff7.enableWalkAnywhere() : ff7.disableWalkAnywhere()} 
+              onCheckedChange={() => {
+                const newValue = !ff7.gameState.walkAnywhereEnabled;
+                newValue ? ff7.enableWalkAnywhere() : ff7.disableWalkAnywhere();
+                rememberHack('walkAnywhere', newValue);
+              }}
             />
           </Row>
         </div>
@@ -440,8 +453,8 @@ export function World(props: { ff7: FF7; mapWindow: Window | null; setMapWindow:
           <div className="flex gap-2 p-2 bg-zinc-800 rounded-md text-xs">
             <div className="flex-1 flex items-center gap-2">
               <div>Zoom</div>
-                <Slider 
-                  value={[zoom]} 
+                <Slider
+                  value={[zoom]}
                   onValueChange={async (value) => {
                     setZoom(value[0]);
                     await ff7.setWorldZoom(value[0]);
@@ -454,8 +467,8 @@ export function World(props: { ff7: FF7; mapWindow: Window | null; setMapWindow:
             </div>
             <div className="flex-1 flex items-center gap-2">
               <div>Tilt</div>
-                <Slider 
-                  value={[tilt]} 
+                <Slider
+                  value={[tilt]}
                   onValueChange={async (value) => {
                     setTilt(value[0]);
                     await ff7.setWorldTilt(value[0]);
@@ -469,7 +482,7 @@ export function World(props: { ff7: FF7; mapWindow: Window | null; setMapWindow:
           </div>
         </>
       )}
-      
+
       <div className="relative mb-2 mt-2">
         <div className="flex items-center justify-between mb-1">
           <h2 className="uppercase font-medium text-sm tracking-wide text-zinc-900 dark:text-zinc-100">
@@ -501,11 +514,11 @@ export function World(props: { ff7: FF7; mapWindow: Window | null; setMapWindow:
           getEnemyNames={getEnemyNames}
           onStartBattle={onStartBattle}
         />
-      ) : 
+      ) :
       <div className="text-xs text-zinc-400 text-center mb-8">
         No encounters for current region & terrain
       </div>
-      
+
       }
 
       {state.worldModels && state.worldModels.length > 0 && <>
