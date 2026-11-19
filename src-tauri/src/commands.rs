@@ -331,5 +331,11 @@ pub fn generate_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync {
         write_occupied_stables,
         set_chocobo_can_mate,
         write_field_lights,
+        crate::world_stream::capture_world_stream,
+        crate::world_stream::restore_world_stream,
+        crate::world_stream::has_world_stream,
+        crate::world_stream::delete_world_streams,
+        crate::world_stream::export_world_stream,
+        crate::world_stream::import_world_stream,
     ]
 }

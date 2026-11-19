@@ -3,6 +3,7 @@ import { Destination } from "./types";
 import { useSettings, SaveStateBase, WorldSaveState, saveStateDisplayOrderAtom } from "./useSettings";
 import { logger } from "./lib/logging";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
+import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 type RegionOffset = [number, number];
@@ -45,6 +46,28 @@ export type SnowBoardSaveState = SaveStateBase & {
 
 function generateId(): string {
   return crypto.randomUUID();
+}
+
+// ── World chunk data files ──────────────────────────────────────────────────
+// The terrain streaming snapshot of a world state is too big for settings.json, so it lives in a file
+// named after the state id (app data dir, world_states/<id>.wsnap, written by the Rust side).
+
+export async function deleteWorldStreamFiles(ids: string[]) {
+  if (ids.length === 0) return;
+  try {
+    await invoke('delete_world_streams', { ids });
+  } catch (e) {
+    logger.warn('Could not delete world chunk data files', { error: String(e) });
+  }
+}
+
+function bytesToBase64(bytes: ArrayLike<number>): string {
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, Array.from({ length: Math.min(chunk, bytes.length - i) }, (_, k) => bytes[i + k]));
+  }
+  return btoa(binary);
 }
 
 export function useSaveStates() {
@@ -235,14 +258,15 @@ export function useSaveStates() {
 
   const worldStates = saveStates.worldStates || [];
 
-  const pushWorldState = (state: Omit<WorldSaveState, "timestamp" | "id">) => {
-    const id = generateId();
+  // `id` can be given when something else already belongs to the state (its chunk data file).
+  const pushWorldState = (state: Omit<WorldSaveState, "timestamp" | "id"> & { id?: string }) => {
+    const id = state.id ?? generateId();
     updateSaveStates({
       ...saveStates,
       worldStates: [...worldStates, { ...state, id, timestamp: Date.now() }],
     });
     setLastLoadedStateId(null);
-    logger.info('Created new world state', { id });
+    logger.info('Created new world state', { id, chunkData: !!state.chunkData });
   };
 
   // Replaces an existing world state's captured data in place, keeping its
@@ -276,6 +300,7 @@ export function useSaveStates() {
   };
 
   const removeWorldState = (id: string) => {
+    void deleteWorldStreamFiles([id]);
     updateSaveStates({ ...saveStates, worldStates: worldStates.filter(s => s.id !== id) });
     if (lastLoadedFieldStateId === id) setLastLoadedStateId(null);
   };
@@ -283,6 +308,7 @@ export function useSaveStates() {
   const removeStates = (fieldIds: string[], worldIds: string[]) => {
     const fieldIdSet = new Set(fieldIds);
     const worldIdSet = new Set(worldIds);
+    void deleteWorldStreamFiles(worldIds);
     updateSaveStates({
       ...saveStates,
       fieldStates: saveStates.fieldStates.filter(s => !fieldIdSet.has(s.id)),
@@ -294,6 +320,7 @@ export function useSaveStates() {
   };
 
   const clearWorldStates = () => {
+    void deleteWorldStreamFiles(worldStates.map(s => s.id));
     updateSaveStates({ ...saveStates, worldStates: [] });
   };
 
@@ -322,11 +349,13 @@ export function useSaveStates() {
   // ── General ─────────────────────────────────────────────────────────────────
 
   const clearAllStates = () => {
+    void deleteWorldStreamFiles(worldStates.map(s => s.id));
     updateSaveStates({ fieldStates: [], snowboardStates: [], worldStates: [] });
     setLastLoadedStateId(null);
   };
 
-  const exportStates = () => {
+  // `onlyIds` limits which world states get their chunk data embedded (all of them when omitted).
+  const exportStates = async (onlyIds?: Set<string>) => {
     const encodedFieldStates = saveStates.fieldStates.map(state => ({
       ...state,
       regionOffsets: state.regionOffsets || SaveRegions,
@@ -340,15 +369,30 @@ export function useSaveStates() {
       entitiesData: btoa(String.fromCharCode.apply(null, state.entitiesData)),
     }));
 
-    const encodedWorldStates = worldStates.map(state => ({
-      ...state,
-      savemap: btoa(String.fromCharCode.apply(null, state.savemap)),
-    }));
+    const encodedWorldStates = [];
+    for (const state of worldStates) {
+      const encoded: any = {
+        ...state,
+        savemap: btoa(String.fromCharCode.apply(null, state.savemap)),
+      };
+      if (state.chunkData && (!onlyIds || onlyIds.has(state.id))) {
+        try {
+          const file = await invoke<number[]>('export_world_stream', { id: state.id });
+          encoded.chunkStream = bytesToBase64(file);
+        } catch (e) {
+          // The state still exports, it just loads without chunk data on the other side.
+          logger.warn('Could not export world chunk data', { id: state.id, error: String(e) });
+          delete encoded.chunkData;
+        }
+      }
+      encodedWorldStates.push(encoded);
+    }
 
     return { fieldStates: encodedFieldStates, snowboardStates: encodedSnowboardStates, worldStates: encodedWorldStates, displayOrder };
   };
 
-  const importStates = (data: { fieldStates: any[]; snowboardStates: any[]; worldStates?: any[]; displayOrder?: string[] }, replace = false) => {
+  const importStates = async (data: { fieldStates: any[]; snowboardStates: any[]; worldStates?: any[]; displayOrder?: string[] }, replace = false) => {
+    if (replace) await deleteWorldStreamFiles(worldStates.map(s => s.id));
     const baseFieldStates    = replace ? [] : saveStates.fieldStates;
     const baseSnowboardStates = replace ? [] : saveStates.snowboardStates;
     const baseWorldStates    = replace ? [] : worldStates;
@@ -375,13 +419,28 @@ export function useSaveStates() {
       }));
 
     const existingWorldIds = new Set(baseWorldStates.map((s: WorldSaveState) => s.id));
-    const newWorldStates = (data.worldStates || [])
-      .filter(s => !s.id || !existingWorldIds.has(s.id))
-      .map(s => ({
-        ...s,
+    const newWorldStates: WorldSaveState[] = [];
+    for (const s of (data.worldStates || []).filter(s => !s.id || !existingWorldIds.has(s.id))) {
+      const { chunkStream, ...rest } = s;
+      const state: WorldSaveState = {
+        ...rest,
         id: s.id || generateId(),
         savemap: Array.from(atob(s.savemap), c => c.charCodeAt(0)),
-      }));
+      };
+      if (state.chunkData) {
+        try {
+          if (!chunkStream) throw new Error('the export has no chunk data file');
+          await invoke('import_world_stream', {
+            id: state.id,
+            data: Array.from(atob(chunkStream), c => c.charCodeAt(0)),
+          });
+        } catch (e) {
+          logger.warn('Could not import world chunk data', { id: state.id, error: String(e) });
+          delete state.chunkData;
+        }
+      }
+      newWorldStates.push(state);
+    }
 
     let newDisplayOrder: string[] | undefined;
     if (data.displayOrder?.length) {

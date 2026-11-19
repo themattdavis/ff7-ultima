@@ -10,8 +10,8 @@ import { PositiveStatuses, statuses } from "./ff7Statuses";
 import { battles } from "./ff7Battles";
 import { useEffect, useRef } from "react";
 import { OpcodeWriter } from "./opcodewriter";
-import { useSettings } from "./useSettings";
-import { SaveRegions, useSaveStates } from "./useSaveStates";
+import { useSettings, WorldSaveState } from "./useSettings";
+import { SaveRegions, useSaveStates, deleteWorldStreamFiles } from "./useSaveStates";
 import { useShortcuts } from "./useShortcuts";
 import { useBattleLog } from "./hooks/useBattleLog";
 import { encodeText } from "./ff7/fftext";
@@ -385,48 +385,211 @@ export function useFF7(addresses: FF7Addresses) {
     await writeMemory(addresses.danger_value, v.dangerValue, DataType.Short);
   };
 
-  // Snapshot of everything a world state needs.
-  const captureWorldState = async () => {
-    const { ran, rotationY } = await syncWorldSavemap();
-    if (!ran) {
-      console.warn("saveWorldState: the game did not run World_SaveStateToSavemap, the world part of the savemap may be stale");
-    }
-    const savemap = Array.from((await readMemoryBuffer(addresses.savemap, 0x10f4)) as ArrayLike<number>);
-    if (ran) {
-      // Keep the real camera yaw (the game's save function resets it in camera mode 0).
-      const camera = savemap[SAVEMAP_WORLD_CAMERA_STATE] | (savemap[SAVEMAP_WORLD_CAMERA_STATE + 1] << 8);
-      const patched = (camera & 0xf000) | (rotationY & 0x0fff);
-      savemap[SAVEMAP_WORLD_CAMERA_STATE] = patched & 0xff;
-      savemap[SAVEMAP_WORLD_CAMERA_STATE + 1] = (patched >> 8) & 0xff;
-    }
+  // ── World chunk / triangle data ────────────────────────────────────────────
+  // A world state also keeps the terrain streaming state: the loaded chunks with their decompressed
+  // triangles, the chunk lists and queues, the raw block buffers they come from (all in a file, see
+  // src-tauri/src/world_stream.rs), and per actor the triangle cache. Loading then puts the game back
+  // into exactly the terrain situation the state was saved in, which skips that depend on stale
+  // triangles or on which chunks are loaded need.
+  //
+  // That state is only consistent between two frames, and writing it while the game runs would race the
+  // game's own terrain code. So it is captured and restored with the game thread parked at the frame flip,
+  // the same place callGameFns runs its calls at. The parked thread spins on a flag until we clear it (with
+  // a long watchdog, so a crashed Ultima can not freeze the game forever).
+  const WORLD_STREAM_HOLD_FLAG = 0x00e2d604; // g_bssPad_00e2d604[0], padding nothing reads
+  const WORLD_STREAM_ACK_FLAG = 0x00e2d605; // g_bssPad_00e2d604[1]
+  const WORLD_PLAYER_TERRAIN_TRIANGLE = 0x00e38330; // g_WorldPlayerTerrainTriangle
+  const WORLD_SELECTED_TERRAIN_TRIANGLE = 0x00e36110; // g_pWorldSelectedTerrainTriangle
+  const ACTOR_TRIANGLE_CACHE = 0x60; // WorldActor.triangleCache[6], 8 bytes each
+  const ACTOR_TRIANGLE_CACHE_SIZE = 0x30;
 
-    const playerPtr = await readMemory(addresses.world_current_obj_ptr, DataType.Int);
-    let worldX = 0, worldY = 0, worldZ = 0, worldDirection = 0;
-    if (playerPtr) {
-      worldX = await readMemory(playerPtr + 0x0c, DataType.Int);
-      worldY = await readMemory(playerPtr + 0x10, DataType.SignedInt);
-      worldZ = await readMemory(playerPtr + 0x14, DataType.Int);
-      worldDirection = await readMemory(playerPtr + 0x40, DataType.SignedShort);
+  // Parks the game thread at the next frame flip, after running `calls` there. Returns false (and leaves
+  // the game running) if it did not get there in time.
+  const holdGameAtFlip = async (calls: FnCall[] = [], timeoutMs = 1500): Promise<boolean> => {
+    if (!functionCallerAddr) return false;
+    await writeMemory(WORLD_STREAM_HOLD_FLAG, 1, DataType.Byte);
+    await writeMemory(WORLD_STREAM_ACK_FLAG, 0, DataType.Byte);
+
+    const startOffset = functionCallerAddr;
+    const writer = new OpcodeWriter(startOffset);
+    calls.forEach((fn) => writer.writeCall(fn.address, fn.params));
+    writer.writeHex("C6 05"); // mov byte [ack], 1
+    writer.writeInt32(WORLD_STREAM_ACK_FLAG);
+    writer.write(0x01);
+    writer.write(0xb9); // mov ecx, watchdog
+    writer.writeInt32(0x10000000);
+    writer.writeHex("F3 90"); // spin: pause
+    writer.writeHex("80 3D"); // cmp byte [hold], 0
+    writer.writeInt32(WORLD_STREAM_HOLD_FLAG);
+    writer.write(0x00);
+    writer.writeHex("74 03"); // je done
+    writer.write(0x49); // dec ecx
+    writer.writeHex("75 F2"); // jnz spin
+    // The self-removing trampoline takes the stub length as a signed byte.
+    const length = writer.offset - startOffset;
+    if (length >= 0x7f) throw new Error("holdGameAtFlip: stub too long");
+    writer.writeCall(codeCaveAddresses.customCodePreFlip, [length], true);
+    writer.writeReturn();
+    await writeMemory(startOffset, writer.opcodes, DataType.Buffer);
+
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if ((await readMemory(WORLD_STREAM_ACK_FLAG, DataType.Byte)) === 1) return true;
+      await sleep(10);
     }
+    // Never reached. Let a late arrival run through, and put the empty stub back.
+    await writeMemory(WORLD_STREAM_HOLD_FLAG, 0, DataType.Byte);
+    await writeMemory(functionCallerAddr, [0x5d, 0xc3], DataType.Buffer);
+    return false;
+  };
 
-    const modelCoords = (await readLiveWorldModels()).map((m) => ({
-      model_id: m.model_id,
-      x: m.x,
-      y: m.y,
-      z: m.z,
-      direction: m.direction,
-    }));
+  const releaseGame = async () => {
+    await writeMemory(WORLD_STREAM_HOLD_FLAG, 0, DataType.Byte);
+    if (!(await waitForGameFnCall())) {
+      await writeMemory(functionCallerAddr, [0x5d, 0xc3], DataType.Buffer);
+    }
+  };
 
-    return {
-      savemap,
-      worldX,
-      worldY,
-      worldZ,
-      worldDirection,
-      worldMapType: gameState.worldMapType,
-      modelCoords,
-      stepValues: await readStepValues(),
-    };
+  type WorldChunkActors = NonNullable<WorldSaveState["chunkData"]>["actors"];
+
+  // The terrain related fields of the live world actor records, by model id.
+  const readWorldActorTerrain = async (): Promise<WorldChunkActors> => {
+    const raw = await readMemoryBuffer(addresses.world_models, WORLD_ACTOR_SIZE * WORLD_ACTOR_COUNT);
+    const bytes = new Uint8Array(raw);
+    const actors: WorldChunkActors = [];
+    for (let i = 0; i < WORLD_ACTOR_COUNT; i++) {
+      const o = i * WORLD_ACTOR_SIZE;
+      const live = bytes[o + 0xb8] | bytes[o + 0xb9] | bytes[o + 0xba] | bytes[o + 0xbb];
+      if (live === 0) continue;
+      actors.push({
+        model_id: bytes[o + 0x50],
+        triangleCache: Array.from(bytes.subarray(o + ACTOR_TRIANGLE_CACHE, o + ACTOR_TRIANGLE_CACHE + ACTOR_TRIANGLE_CACHE_SIZE)),
+        // groundY (+0x42), curvedGroundY (+0x48), walkmesh (+0x4A), 16 bits each
+        terrain: [
+          bytes[o + 0x42], bytes[o + 0x43],
+          bytes[o + 0x48], bytes[o + 0x49],
+          bytes[o + 0x4a], bytes[o + 0x4b],
+        ],
+      });
+    }
+    return actors;
+  };
+
+  // Must run with the game held.
+  const captureWorldChunkData = async (stateId: string): Promise<WorldSaveState["chunkData"]> => {
+    try {
+      await invoke("capture_world_stream", { id: stateId });
+      return {
+        version: 1,
+        actors: await readWorldActorTerrain(),
+        playerTerrainTriangle: await readMemory(WORLD_PLAYER_TERRAIN_TRIANGLE, DataType.Int),
+        selectedTerrainTriangle: await readMemory(WORLD_SELECTED_TERRAIN_TRIANGLE, DataType.Int),
+      };
+    } catch (e) {
+      console.warn("captureWorldChunkData: could not save the chunk data", e);
+      return undefined;
+    }
+  };
+
+  // Must run with the game held, in the loaded world (g_WorldMapInitialized set, the actors exist).
+  const restoreWorldChunkData = async (stateId: string, data: NonNullable<WorldSaveState["chunkData"]>) => {
+    try {
+      const report = await invoke<{ relocated: number; moved_by: number }>("restore_world_stream", { id: stateId });
+      console.debug("restoreWorldChunkData: streaming state restored", report);
+    } catch (e) {
+      console.warn("restoreWorldChunkData: could not restore the chunk data", e);
+      return false;
+    }
+    await writeMemory(WORLD_PLAYER_TERRAIN_TRIANGLE, data.playerTerrainTriangle, DataType.Int);
+    await writeMemory(WORLD_SELECTED_TERRAIN_TRIANGLE, data.selectedTerrainTriangle, DataType.Int);
+
+    // Actors: match by model id like restoreModels does.
+    const live = await readLiveWorldModels();
+    const slotByModelId = new Map<number, number>();
+    for (const m of live) slotByModelId.set(m.model_id, m.index);
+    for (const a of data.actors) {
+      const slot = slotByModelId.get(a.model_id);
+      if (slot === undefined) continue;
+      const base = addresses.world_models + slot * WORLD_ACTOR_SIZE;
+      await writeMemory(base + ACTOR_TRIANGLE_CACHE, a.triangleCache, DataType.Buffer);
+      await writeMemory(base + 0x42, a.terrain[0] | (a.terrain[1] << 8), DataType.Short);
+      await writeMemory(base + 0x48, a.terrain[2] | (a.terrain[3] << 8), DataType.Short);
+      await writeMemory(base + 0x4a, a.terrain[4] | (a.terrain[5] << 8), DataType.Short);
+    }
+    return true;
+  };
+
+  // Snapshot of everything a world state needs. `stateId` names the chunk data file.
+  const captureWorldState = async (stateId: string) => {
+    // The game only copies the live world state into the savemap when the world map is left or the menu
+    // opens, so World_SaveStateToSavemap is run first (see syncWorldSavemap). Here it runs at the very
+    // flip the game is then parked at, so the savemap, the actors and the chunk data all come from the
+    // same frame.
+    const camRotationY = await readMemory(WORLD_CAMERA_ROTATION_Y, DataType.Int);
+    const camFront = await readMemory(WORLD_CAMERA_FRONT, DataType.Int);
+    const held = functionCallerAddr
+      ? await holdGameAtFlip([{ address: WORLD_FN_SAVE_STATE_TO_SAVEMAP }])
+      : false;
+
+    let ran = held;
+    let rotationY = camRotationY;
+    let chunkData: WorldSaveState["chunkData"] = undefined;
+    try {
+      if (held) {
+        // That function snaps the camera to the front in camera mode 0: put the live camera back.
+        await writeMemory(WORLD_CAMERA_ROTATION_Y, camRotationY, DataType.Int);
+        await writeMemory(WORLD_CAMERA_FRONT, camFront, DataType.Int);
+      } else {
+        console.warn("saveWorldState: could not park the game at the frame flip, saving without chunk data");
+        ({ ran, rotationY } = await syncWorldSavemap());
+      }
+      if (!ran) {
+        console.warn("saveWorldState: the game did not run World_SaveStateToSavemap, the world part of the savemap may be stale");
+      }
+      const savemap = Array.from((await readMemoryBuffer(addresses.savemap, 0x10f4)) as ArrayLike<number>);
+      if (ran) {
+        // Keep the real camera yaw (the game's save function resets it in camera mode 0).
+        const camera = savemap[SAVEMAP_WORLD_CAMERA_STATE] | (savemap[SAVEMAP_WORLD_CAMERA_STATE + 1] << 8);
+        const patched = (camera & 0xf000) | (rotationY & 0x0fff);
+        savemap[SAVEMAP_WORLD_CAMERA_STATE] = patched & 0xff;
+        savemap[SAVEMAP_WORLD_CAMERA_STATE + 1] = (patched >> 8) & 0xff;
+      }
+
+      const playerPtr = await readMemory(addresses.world_current_obj_ptr, DataType.Int);
+      let worldX = 0, worldY = 0, worldZ = 0, worldDirection = 0;
+      if (playerPtr) {
+        worldX = await readMemory(playerPtr + 0x0c, DataType.Int);
+        worldY = await readMemory(playerPtr + 0x10, DataType.SignedInt);
+        worldZ = await readMemory(playerPtr + 0x14, DataType.Int);
+        worldDirection = await readMemory(playerPtr + 0x40, DataType.SignedShort);
+      }
+
+      const modelCoords = (await readLiveWorldModels()).map((m) => ({
+        model_id: m.model_id,
+        x: m.x,
+        y: m.y,
+        z: m.z,
+        direction: m.direction,
+      }));
+      const stepValues = await readStepValues();
+      if (held) chunkData = await captureWorldChunkData(stateId);
+
+      return {
+        savemap,
+        worldX,
+        worldY,
+        worldZ,
+        worldDirection,
+        worldMapType: gameState.worldMapType,
+        modelCoords,
+        stepValues,
+        // Always present (undefined when it could not be saved) so that overwriting a state also drops
+        // the chunk data of what it was before.
+        chunkData,
+      };
+    } finally {
+      if (held) await releaseGame();
+    }
   };
 
   const getFieldObjPtr = async () => {
@@ -680,6 +843,41 @@ export function useFF7(addresses: FF7Addresses) {
     }
   }, [gameState.battleQueue, gameState.currentModule, addLogItem]);
 
+
+  // Battle state the game never resets between battles.
+  //
+  // The game closes an actor's turn lazily: it remembers the actor in g_BattleTrackedTurnActor and only
+  // queues that actor's "reset ATB" event when the next turn opens or the action queue goes idle
+  // (Battle_CloseActorTurn). Battle start clears the actors, the event queues and the action list, but
+  // not that variable, nor the state words of the action queue runner (Battle_RunActionQueue). A battle
+  // that ends while a turn is still open (the Win/Escape buttons, a swirl skip, loading a state, ...)
+  // leaves the actor in there, and the next battle then resets that character's ATB to 0 when its
+  // first turn opens. A runner left mid-action resumes in the next battle too.
+  // A normal battle end closes everything, so what is left over is simply put back to what the game has
+  // right after launch. That is only done while no battle is running.
+  const BATTLE_TRACKED_TURN_ACTOR = 0x007c2acc; // g_BattleTrackedTurnActor, -1 when no turn is open
+  const BATTLE_QUEUE_RUNNER_STATE = 0x009aea68; // g_BattleSweepComplete .. BattleActionQueueState.subPhase
+  const BATTLE_QUEUE_RUNNER_STATE_SIZE = 0x30; // up to, not including, 0x009aea98
+  const resetBattleLeftovers = async () => {
+    try {
+      await writeMemory(BATTLE_TRACKED_TURN_ACTOR, -1, DataType.SignedInt);
+      await writeMemory(BATTLE_QUEUE_RUNNER_STATE, new Array(BATTLE_QUEUE_RUNNER_STATE_SIZE).fill(0), DataType.Buffer);
+    } catch (e) {
+      console.warn("resetBattleLeftovers: could not reset the battle state", e);
+    }
+  };
+
+  const battleLeftoversPending = useRef(true);
+  useEffect(() => {
+    if (!connected || gameState.currentModule === GameModule.Battle) {
+      // In a battle (or not connected yet): whatever it leaves behind has to be cleaned up afterwards.
+      battleLeftoversPending.current = true;
+      return;
+    }
+    if (!battleLeftoversPending.current) return;
+    battleLeftoversPending.current = false;
+    void resetBattleLeftovers();
+  }, [connected, gameState.currentModule]);
 
   // Standalone helper: write the movie_skip byte and apply all field-specific
   // softlock fixes. Used by both skipFMV() and the auto-skip polling block.
@@ -1457,11 +1655,15 @@ export function useFF7(addresses: FF7Addresses) {
       await writeMemory(0xddaf98, state.entitiesData, DataType.Buffer);
     },
     async saveWorldState(title?: string, category?: string) {
-      const captured = await captureWorldState();
-      saveStates.pushWorldState({ ...captured, title, category });
+      const id = crypto.randomUUID();
+      const captured = await captureWorldState(id);
+      if (!captured.chunkData) await deleteWorldStreamFiles([id]);
+      saveStates.pushWorldState({ ...captured, id, title, category });
     },
     async overwriteWorldState(stateId: string) {
-      const captured = await captureWorldState();
+      const captured = await captureWorldState(stateId);
+      // A state without chunk data must not keep the file of what it was before.
+      if (!captured.chunkData) await deleteWorldStreamFiles([stateId]);
       saveStates.overwriteWorldState(stateId, captured);
     },
     async loadWorldState(stateId?: string) {
@@ -1527,6 +1729,26 @@ export function useFF7(addresses: FF7Addresses) {
       const finishRestore = async () => {
         await restorePlayer();
         await restoreStepValues();
+      };
+
+      // Everything that goes back into the freshly loaded world. With chunk data it all happens with the
+      // game parked at the frame flip, so no frame runs on a half restored world: first the terrain
+      // streaming state and the per-actor triangle caches, then the models and the player. States without
+      // chunk data (older ones, or a failed capture) restore as before.
+      const restoreWorldRuntime = async () => {
+        const chunkData = state.chunkData;
+        const held = chunkData ? await holdGameAtFlip() : false;
+        try {
+          if (chunkData && held) {
+            await restoreWorldChunkData(state.id, chunkData);
+          } else if (chunkData) {
+            console.warn("loadWorldState: could not park the game at the frame flip, restoring without chunk data");
+          }
+          await restoreModels();
+          await finishRestore();
+        } finally {
+          if (held) await releaseGame();
+        }
       };
 
       if (gameState.currentModule === GameModule.World) {
@@ -1597,8 +1819,7 @@ export function useFF7(addresses: FF7Addresses) {
             // switch: before the load completes the player pointer is null or
             // stale and the load itself would overwrite our writes.
             await waitForWorldReady();
-            await restoreModels();
-            await finishRestore();
+            await restoreWorldRuntime();
           }
         } catch (e) {
           console.warn("loadWorldState: error restoring world state", e);
@@ -1618,8 +1839,7 @@ export function useFF7(addresses: FF7Addresses) {
             console.warn("loadWorldState: world map did not finish loading, skipping position restore");
             return;
           }
-          await restoreModels();
-          await finishRestore();
+          await restoreWorldRuntime();
         } catch (e) {
           console.warn("loadWorldState: error during field-to-world transition", e);
         }

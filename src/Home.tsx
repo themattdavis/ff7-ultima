@@ -18,7 +18,7 @@ import { SCM } from "./modules/SCM";
 import { Party } from "./modules/Party";
 import { Chocobos } from "./modules/Chocobos";
 import { Variables } from "./modules/Variables";
-import { SaveStatesModule } from "./modules/SaveStates";
+import { SaveStates } from "./modules/SaveStates";
 import { Speedrun } from "./modules/Speedrun";
 import { Stepgraph } from "./modules/Stepgraph";
 import { BarChart2 } from "lucide-react";
@@ -148,7 +148,7 @@ function Home() {
       case Tabs.Variables:
         return <Variables ff7={ff7} />;
       case Tabs.SaveStates:
-        return <SaveStatesModule ff7={ff7} />;
+        return <SaveStates ff7={ff7} />;
       case Tabs.Speedrun:
         return <Speedrun ff7={ff7} stepgraphWindow={stepgraphWindow} setStepgraphWindow={setStepgraphWindow} stepgraphWebview={stepgraphWebview} setStepgraphWebview={setStepgraphWebview} />;
       case Tabs.StepGraph:

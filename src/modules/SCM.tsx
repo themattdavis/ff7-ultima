@@ -4,6 +4,7 @@ import { BattleRngSnapshot } from "@/types";
 import { musicList } from "@/ff7Music";
 import BattleAutocomplete, { BattleFormationItem } from "@/components/BattleAutocomplete";
 import { useFF7Context } from "@/FF7Context";
+import { BattleRngMonitor } from "@/components/BattleRngMonitor";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 type SavedRngState = {
@@ -188,12 +189,9 @@ export function SCM(props: { ff7: FF7 }) {
   };
 
   const startBattle = async (battle: BattleEntry) => {
+    // No assigned state (or one that was deleted since) means the default RNG: the battle starts with
+    // whatever the game's RNG is right now, nothing gets written to it.
     const saved = snapshots.find(item => item.id === battle.snapshotId);
-
-    if (!saved) {
-      setStatus(`No RNG state is assigned to "${battle.name}".`);
-      return;
-    }
 
     if (battle.battleId === undefined) {
       setStatus(`No battle formation is selected for "${battle.name}".`);
@@ -204,9 +202,15 @@ export function SCM(props: { ff7: FF7 }) {
     setStatus("");
 
     try {
-      await props.ff7.writeBattleRngSnapshot(saved.snapshot);
+      if (saved) {
+        await props.ff7.writeBattleRngSnapshot(saved.snapshot);
+      }
       await props.ff7.startBattle(battle.battleId, battle.musicId ?? 0);
-      setStatus(`Restored "${saved.name}" and started "${battle.name}".`);
+      setStatus(
+        saved
+          ? `Restored "${saved.name}" and started "${battle.name}".`
+          : `Started "${battle.name}" with the default RNG.`,
+      );
     } catch (error) {
       setStatus(`Could not start "${battle.name}": ${String(error)}`);
     } finally {
@@ -216,13 +220,6 @@ export function SCM(props: { ff7: FF7 }) {
 
   return (
     <div className="space-y-6 pb-6">
-      <div>
-        <p className="text-sm text-zinc-400">
-          Save and restore battle RNG states, then organise your own battle
-          setups. Assign an RNG state to each battle, then start it directly from this table.
-        </p>
-      </div>
-
       <section className="rounded-lg border border-zinc-700 bg-zinc-900/30 p-3">
         <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
           <div>
@@ -387,10 +384,6 @@ export function SCM(props: { ff7: FF7 }) {
         ) : (
           <div className="space-y-1">
             {battles.map((battle, index) => {
-              const assigned = snapshots.find(
-                item => item.id === battle.snapshotId
-              );
-
               return (
                 <div
                   key={battle.id}
@@ -403,7 +396,7 @@ export function SCM(props: { ff7: FF7 }) {
                       </span>
                       <span className="font-medium">{battle.name}</span>
                       <span className="ml-2 text-xs text-zinc-500">
-                        ID {battle.battleId ?? "not selected"} · {musicList[battle.musicId ?? 0]}
+                        ID {battle.battleId ?? "not selected"} Â· {musicList[battle.musicId ?? 0]}
                       </span>
                     </div>
                     <div className="flex flex-wrap gap-1">
@@ -448,7 +441,7 @@ export function SCM(props: { ff7: FF7 }) {
                         })
                       }
                     >
-                      <option value="">No RNG state assigned</option>
+                      <option value="">Default RNG</option>
                       {snapshots.map(saved => (
                         <option key={saved.id} value={saved.id}>
                           {saved.name}
@@ -457,7 +450,7 @@ export function SCM(props: { ff7: FF7 }) {
                     </select>
                     <button
                       className={`${buttonClass} border-emerald-700 text-emerald-300`}
-                      disabled={busy || !assigned || battle.battleId === undefined}
+                      disabled={busy || battle.battleId === undefined}
                       onClick={() => void startBattle(battle)}
                     >
                       Start
@@ -479,6 +472,8 @@ export function SCM(props: { ff7: FF7 }) {
           {status}
         </div>
       )}
+
+      <BattleRngMonitor ff7={props.ff7} />
     </div>
   );
 }
