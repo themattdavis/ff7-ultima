@@ -22,7 +22,7 @@ import { SaveStates } from "./modules/SaveStates";
 import { Speedrun } from "./modules/Speedrun";
 import { Stepgraph } from "./modules/Stepgraph";
 import { BarChart2 } from "lucide-react";
-import { useShortcuts } from './useShortcuts';
+import { useShortcutRegistration } from './useShortcuts';
 import { ChocoboHead } from "./components/icons/ChocoboHead";
 import { BinaryGrid } from "./components/icons/BinaryGrid";
 import { BusterSword } from "./components/icons/BusterSword";
@@ -100,7 +100,7 @@ function Home() {
   }
 
   // Use the new shortcuts system
-  useShortcuts();
+  useShortcutRegistration();
 
   // Keep the map viewer data feed alive regardless of which tab is active
   useEffect(() => {

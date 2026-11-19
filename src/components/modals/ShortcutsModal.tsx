@@ -40,7 +40,10 @@ export function ShortcutsContent({ ff7 }: ShortcutsContentProps) {
       if (e.ctrlKey) combo += "Ctrl+";
       if (e.altKey) combo += "Alt+";
       if (e.shiftKey) combo += "Shift+";
-      combo += e.key.toUpperCase();
+      // Use the physical key for letters and digits: with Shift held, e.key is the shifted symbol ("!" for 1),
+      // which is not a valid accelerator.
+      const baseKey = /^(Key[A-Z]|Digit[0-9])$/.test(e.code) ? e.code.slice(-1) : e.key.toUpperCase();
+      combo += baseKey;
 
       await updateShortcut(listeningFor, combo);
       stopListening();
