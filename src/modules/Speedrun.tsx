@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { WarpFieldModal } from "@/components/modals/WarpFieldModal";
 import { GameMomentModal } from "@/components/modals/GameMomentModal";
 import { EnemyInfoModal } from "@/components/modals/EnemyInfoModal";
-import { SaveStates } from "@/components/SaveStates";
+import { SaveStates } from "@/modules/SaveStates";
 import { Stepgraph } from "./Stepgraph";
 import { statuses } from "@/ff7Statuses";
 import { BattleCharObj, EnemyData, GameModule } from "@/types";

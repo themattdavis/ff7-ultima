@@ -187,7 +187,6 @@ function WorldRow({
       </td>
       <td className="p-1 text-zinc-400">
         🌍 {WORLD_MAP_NAMES[state.worldMapType] ?? "World Map"}
-        {state.chunkData && <span className="ml-2 text-zinc-500" title="Includes the loaded chunk and triangle data">chunks</span>}
       </td>
       <td className="p-1 text-right space-x-1">
         <Button size="xs" variant="secondary" onClick={onLoad}>Load</Button>

@@ -114,6 +114,13 @@ export type WorldSaveState = SaveStateBase & {
   modelCoords: { x: number; y: number; z: number; direction: number; model_id?: number }[];
   // Random-encounter values, saved and restored like field states do.
   stepValues?: { stepId: number; stepFraction: number; stepOffset: number; formationIndex: number; dangerValue: number };
+  // Loaded chunk / terrain triangle data. The chunk stream itself lives in a separate file named after the state id.
+  chunkData?: {
+    version: number;
+    actors: { model_id: number; triangleCache: number[]; terrain: number[] }[];
+    playerTerrainTriangle: number;
+    selectedTerrainTriangle: number;
+  };
 };
 
 const generalSettingsAtom = atom<GeneralSettings | null>(null);
